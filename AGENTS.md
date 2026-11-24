@@ -55,8 +55,9 @@ Things that cost time here:
 
 ## Releases
 
-Tags are `vX.Y.Z-alphaN`, published as **pre-releases**; the Builder's update check lists releases (not `/releases/latest`,
-which hides pre-releases) and orders `alpha < beta < rc < final`.
+Tags are `vX.Y.Z-alpha.N`, published as **pre-releases**. Starting at `v0.1.1-alpha.11`, the numeric suffix sorts numerically
+under SemVer, and the patch bump puts these tags above the legacy `v0.1.0-alphaN` tags. The Builder's update check lists
+releases (not `/releases/latest`, which hides pre-releases) and orders `alpha < beta < rc < final`.
 
 1. Commit and push `main` (`git push github wondershot-main:main` from the worktree branch).
 2. `python -I scripts/renhdrum.py build --target windows --llvm-mingw <llvm-mingw folder> --out <dll>` (RenHDrum's haptics, from

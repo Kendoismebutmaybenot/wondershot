@@ -11,7 +11,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>WondershotBuilder</AssemblyName>
     <RootNamespace>WondershotBuilder</RootNamespace>
-    <Version>0.1.0</Version>
+    <Version>0.1.1</Version>
     <Product>Wondershot Builder</Product>
     <Description>Builds Wondershot from your own copy of Super Mario Bros. Wonder</Description>
     <ApplicationManifest>app.manifest</ApplicationManifest>
