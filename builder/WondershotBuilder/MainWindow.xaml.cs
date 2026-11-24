@@ -47,6 +47,7 @@ public partial class MainWindow : Window
     string outDir;
     bool gameOk, building;
     string? builtFolder;
+    string? buildWarning;   // (a step that did not finish but left a working game: "@@warn <text>", shown on the Done page)
     string? updateTag, updateUrl;   // (a newer release of the port than this install: its tag and its sources on GitHub)
 
     public MainWindow()
@@ -192,6 +193,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         log.Clear();
+        buildWarning = null;
         LogBox.Clear();
         Bar.Value = 0;
         BarPercent.Text = "0%";
@@ -245,6 +247,10 @@ public partial class MainWindow : Window
         {
             builtFolder = line[7..].Trim();
         }
+        else if (line.StartsWith("@@warn "))
+        {
+            buildWarning = line[7..].Trim();
+        }
         if (!line.StartsWith("@@progress ") && !line.StartsWith("@@eta "))
         {
             LogBox.AppendText(line + Environment.NewLine);
@@ -269,6 +275,8 @@ public partial class MainWindow : Window
         for (var i = 0; i < 4; i++) steps[i].State = 2;
         steps[2].Sub = "Built";
         steps[3].Sub = "Ready";
+        DoneWarn.Visibility = string.IsNullOrEmpty(buildWarning) ? Visibility.Collapsed : Visibility.Visible;
+        DoneWarnText.Text = buildWarning ?? "";
         DoneText.Text = "Wondershot is in " + builtFolder + ". Plug in a controller if you like: every pad, and the keyboard, can be a player.";
         Page("done");
     }

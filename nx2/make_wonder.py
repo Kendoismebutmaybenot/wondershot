@@ -683,6 +683,7 @@ def make_hdr(out, tools):
         say("HDR shaders made: shader_overrides\\hdr")
     except HdrSkipped as why:
         say("the HDR shaders could not be made (%s): the game plays, without its HDR highlights. Build again to retry." % why)
+        say("@@warn", "The HDR shaders could not be made (%s). Wondershot plays, but without its HDR highlights. Press Build again to retry." % why)
     finally:
         for p in dumps.values():   # (the game's own code: not left lying in the folder)
             if os.path.exists(p):
