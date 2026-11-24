@@ -3,7 +3,7 @@
 > **Work in progress.** Wondershot runs, but it isn't packaged yet. A builder (point it at your own game dump, get a ready-to-play
 > folder) is coming soon. Until then, building it means using the developer tools below.
 
-Wondershot is a native PC port of **Super Mario Bros. Wonder – Nintendo Switch 2 Edition**, built on
+Wondershot is a static recompilation of **Super Mario Bros. Wonder – Nintendo Switch 2 Edition** for PC, built on
 [Longshot](https://git.magicbean.dev/MagicBeanDev/Longshot) by MagicBeanDev. It statically recompiles the game's own code
 for the PC, so you need your own legally dumped copy of the game. **No game files are included here, and none ever will be.**
 

@@ -2447,8 +2447,9 @@ void draw_options(ui::Ctx& c) {
     for (int i = 0; i < 2; i++) {
         const float cw = 26 * s, cx = i ? x + total + 22 * s : x - 22 * s - cw;
         const bool hover = hover_tab == TAB_COUNT + i;
-        c.d->AddRectFilled(ImVec2(cx, ty - 13 * s), ImVec2(cx + cw, ty + 13 * s), hover ? ui::kTabInset : ui::kBannerInk, 3 * s);
-        ui::text_mid_centre(c, c.f.strong, 14 * s, cx + cw * 0.5f, ty, ui::kInk, keys[i]);
+        // (Wondershot: black caps, white letters: the banner-ink ones were barely visible on the red banner)
+        c.d->AddRectFilled(ImVec2(cx, ty - 13 * s), ImVec2(cx + cw, ty + 13 * s), hover ? ui::rgba(60, 60, 60, 255) : ui::rgba(16, 16, 16, 255), 3 * s);
+        ui::text_mid_centre(c, c.f.strong, 14 * s, cx + cw * 0.5f, ty, ui::rgba(255, 255, 255, 255), keys[i]);
         hits.add(i ? cx - 10 * s : 0, 0, i ? c.w : cx + cw + 10 * s, hh, i ? menu_hit::kTabNext : menu_hit::kTabPrev, -1);
     }
     for (int i = 0; i < TAB_COUNT; i++) {
