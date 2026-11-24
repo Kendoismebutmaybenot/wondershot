@@ -1882,16 +1882,28 @@ int start(void* hwnd) {
     }
 #ifdef _WIN32
     if (!open_window_surface(true)) return 0;
-    RECT r{};
-    GetClientRect((HWND)hwnd, &r);
     {
-        // (longshot) the same guard as the SDL path below: hos_win runs the renderer on its own
-        // thread, so the window's close (display.c, main thread) can be asked while the initial
-        // chain is being made. The close takes present_image_mu through its retire; take it here
-        // and check its flag — a window already closing gets no chain.
-        std::lock_guard pi(present_image_mu);
-        if (dev.closing.load(std::memory_order_acquire)) return 0;
-        if (!create_swapchain((uint32_t)(r.right - r.left), (uint32_t)(r.bottom - r.top))) return 0;
+        // (Wonder build) a chain the driver refuses at the start is asked for again for up to 6 s before the window is given
+        // up: started just after another game's window closed, NVIDIA answered VK_ERROR_OUT_OF_DEVICE_MEMORY with 12 GB free
+        // (the closed window's images still being given back), and the window then stayed black for the whole run.
+        bool made = false;
+        for (int attempt = 0; attempt < 24 && !made; attempt++) {
+            if (attempt) {
+                if (attempt == 1) logf("vk: the window's swapchain was refused: asked again for up to 6 s");
+                Sleep(250);
+            }
+            // (longshot) the same guard as the SDL path below: hos_win runs the renderer on its own
+            // thread, so the window's close (display.c, main thread) can be asked while the initial
+            // chain is being made. The close takes present_image_mu through its retire; take it here
+            // and check its flag — a window already closing gets no chain.
+            std::lock_guard pi(present_image_mu);
+            if (dev.closing.load(std::memory_order_acquire)) return 0;
+            RECT r{};
+            GetClientRect((HWND)hwnd, &r);
+            made = create_swapchain((uint32_t)(r.right - r.left), (uint32_t)(r.bottom - r.top));
+            if (made && attempt) logf("vk: the window's swapchain made at attempt %d", attempt + 1);
+        }
+        if (!made) return 0;
     }
 #else
     const MkwVkWindow* w = (const MkwVkWindow*)hwnd;
