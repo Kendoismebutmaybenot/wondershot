@@ -1,7 +1,9 @@
 # Wondershot
 
-> **Work in progress.** Wondershot runs, but it isn't packaged yet. A builder (point it at your own game dump, get a ready-to-play
-> folder) is coming soon. Until then, building it means using the developer tools below.
+> **Work in progress.** Wondershot runs, and there is a builder app: point it at your own game dump (or its `.nup`), press Build, then
+> Play. It fetches the compiler and libraries it needs once (about 230 MB, each checked against `tools.lock`), recompiles the game on
+> your PC and sets the folder up. When a newer Wondershot release is out, the builder says so and Update downloads it and rebuilds
+> only what changed. The app is `builder/WondershotBuilder` (WPF, .NET 8); `scripts/wonder_builder_package.py` makes its folder.
 
 Wondershot is a static recompilation of **Super Mario Bros. Wonder – Nintendo Switch 2 Edition** for PC, built on
 [Longshot](https://git.magicbean.dev/MagicBeanDev/Longshot) by MagicBeanDev. It statically recompiles the game's own code
@@ -28,7 +30,11 @@ for the PC, so you need your own legally dumped copy of the game. **No game file
 
 The HDR replaces two of the game's shaders at run time. They're made on your PC from your own game by
 `scripts/renodx_wonder_sw2.py` (from shaders the game dumps with `RX_VK_DUMP_FRAG`), written to `shader_overrides/hdr/` next
-to the game, and never committed. The builder will do this step for you.
+to the game, and never committed. The builder does this as its last step: it opens the new game once by itself until the title
+has drawn both shaders, edits them, and deletes the dumps. The tools for it come without the Vulkan SDK: glslang's own Windows
+release, and SPIRV-Cross compiled from its sources with the builder's compiler (both checked by SHA-256). If the step can't
+finish, the game still plays, without its HDR highlights; building again retries it (`nx2/make_wonder.py --hdr-only --out <folder>`
+does only this step).
 
 ## Credits
 

@@ -14,7 +14,8 @@ no saturate, and the present pass (gpu/vk/shaders/hdr_encode.comp mode 2) maps t
 
     python -I scripts/renodx_wonder_sw2.py --dump <9c39b1dd1e1bad88.frag.spv> --game "C:/Games/Wonder Switch 2"
 writes <game>/shader_overrides/hdr/9c39b1dd1e1bad88.frag.spv. The dump comes from the game itself:
-RX_VK_DUMP_FRAG=9c39b1dd1e1bad88 (vk_shader.cpp frag_override). Needs spirv-cross and glslc (Vulkan SDK). The game's code
+RX_VK_DUMP_FRAG=9c39b1dd1e1bad88 (vk_shader.cpp frag_override). Needs spirv-cross and glslc or glslang (the Vulkan SDK, or the builder's
+shader-tools folder through RENODX_TOOLS: nx2/make_wonder.py runs all of this itself after a build). The game's code
 and anything made from it stay on the player's PC: never commit the dump or the output.
 """
 import argparse
@@ -48,16 +49,33 @@ vec3 hdr_decode(vec3 c)
 """
 
 
-def tool(name):
+def tool(name, required=True):
+    """name's executable: RENODX_TOOLS (the builder's shader-tools folder) first, then the Vulkan SDK, then PATH"""
+    exe = name + (".exe" if os.name == "nt" else "")
+    dirs = [os.environ.get("RENODX_TOOLS")]
     for d in filter(None, [os.environ.get("VULKAN_SDK"), "C:/VulkanSDK/1.4.363.0"]):
-        for sub in ("Bin", "bin"):
-            p = os.path.join(d, sub, name + (".exe" if os.name == "nt" else ""))
-            if os.path.isfile(p):
-                return p
+        dirs += [os.path.join(d, "Bin"), os.path.join(d, "bin")]
+    for d in filter(None, dirs):
+        p = os.path.join(d, exe)
+        if os.path.isfile(p):
+            return p
     p = shutil.which(name)
-    if not p:
+    if not p and required:
         sys.exit(f"{name} not found: install the Vulkan SDK (or set VULKAN_SDK)")
     return p
+
+
+def compile_frag(src, dst, cwd):
+    """GLSL to SPIR-V: glslc when there is one, else glslang (the builder brings glslang's own release, not the Vulkan SDK)"""
+    own = os.environ.get("RENODX_TOOLS")
+    own = os.path.join(own, "glslang" + (".exe" if os.name == "nt" else "")) if own else None
+    glslc = None if own and os.path.isfile(own) else tool("glslc", required=False)   # (the builder's tools, when given, always)
+    if glslc:
+        cmd = [glslc, "-fshader-stage=frag", "--target-env=vulkan1.2", "-O", src, "-o", dst]
+    else:
+        glslang = own if own and os.path.isfile(own) else tool("glslang", required=False) or tool("glslangValidator")
+        cmd = [glslang, "-V", "--target-env", "vulkan1.2", "-S", "frag", src, "-o", dst]
+    subprocess.run(cmd, check=True, cwd=cwd, stdout=subprocess.DEVNULL)
 
 
 HEADER = """
@@ -210,8 +228,7 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         with open(os.path.join(tmp, PROGRAM + ".frag"), "w") as f:
             f.write(glsl)
-        subprocess.run([tool("glslc"), "-fshader-stage=frag", "--target-env=vulkan1.2", "-O", PROGRAM + ".frag",
-                        "-o", os.path.abspath(dst)], check=True, cwd=tmp)
+        compile_frag(PROGRAM + ".frag", os.path.abspath(dst), tmp)
     print(f"wrote {dst} (scale {a.scale}, xmax {a.xmax})")
     if a.copy_dump:
         copy_override(a.copy_dump, out_dir)
@@ -230,8 +247,7 @@ def copy_override(dump, out_dir):
     with tempfile.TemporaryDirectory() as tmp:
         with open(os.path.join(tmp, COPY + ".frag"), "w") as f:
             f.write(glsl)
-        subprocess.run([tool("glslc"), "-fshader-stage=frag", "--target-env=vulkan1.2", "-O", COPY + ".frag",
-                        "-o", os.path.abspath(dst)], check=True, cwd=tmp)
+        compile_frag(COPY + ".frag", os.path.abspath(dst), tmp)
     print(f"wrote {dst} (the final copy: title menus clamped to SDR)")
 
 

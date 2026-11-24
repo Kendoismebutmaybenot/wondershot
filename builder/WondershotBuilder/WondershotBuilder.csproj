@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Wondershot Builder: the window players use. It asks for their own copy of the game, runs nx2/make_wonder.py (which downloads the
+       build tools it lacks, recompiles the game on this PC and sets the game folder up) and starts the game. Nothing of the game
+       is in this app: dotnet publish -c Release gives a folder with WondershotBuilder.exe (self-contained, nothing to install) -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>WondershotBuilder</AssemblyName>
+    <RootNamespace>WondershotBuilder</RootNamespace>
+    <Version>0.1.0</Version>
+    <Product>Wondershot Builder</Product>
+    <Description>Builds Wondershot from your own copy of Super Mario Bros. Wonder</Description>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>..\setup\wonder.ico</ApplicationIcon>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>false</PublishSingleFile>
+    <DebugType>none</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Resource Include="..\setup\wonder.ico" Link="wonder.ico" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,221 @@
+<Window x:Class="WondershotBuilder.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Wondershot Builder" Width="1000" Height="730" MinWidth="1000" MinHeight="730"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent" ResizeMode="CanMinimize"
+        WindowStartupLocation="CenterScreen" AllowDrop="True" Icon="wonder.ico" UseLayoutRounding="True" SnapsToDevicePixels="True"
+        TextOptions.TextFormattingMode="Ideal" TextOptions.TextRenderingMode="ClearType">
+    <Border Margin="12" CornerRadius="10" Background="{StaticResource WindowBrush}" BorderBrush="{StaticResource EdgeBrush}" BorderThickness="1">
+        <Border.Effect><DropShadowEffect BlurRadius="18" ShadowDepth="3" Opacity="0.45" Color="Black"/></Border.Effect>
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="92"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <!-- the header: a name, a line under it, nothing else -->
+            <Grid Grid.Row="0" Background="Transparent" MouseLeftButtonDown="Banner_Drag">
+                <StackPanel Margin="36,26,0,0" VerticalAlignment="Top">
+                    <TextBlock Text="WONDERSHOT" FontFamily="{StaticResource Display}" FontSize="30" Foreground="White" TextWrapping="NoWrap"/>
+                    <TextBlock Text="Super Mario Bros. Wonder – Builder" FontSize="12.5" Foreground="{StaticResource SoftBrush}" Margin="1,0,0,0"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,12,14,0">
+                    <Button Style="{StaticResource ChromeButton}" Click="Minimize_Click" ToolTip="Minimize">
+                        <Rectangle Width="11" Height="1.5" Fill="White" VerticalAlignment="Center" Margin="0,8,0,0"/>
+                    </Button>
+                    <Button Style="{StaticResource ChromeButton}" Click="Close_Click" ToolTip="Close">
+                        <Path Stroke="White" StrokeThickness="1.5" Data="M0,0 L10,10 M10,0 L0,10"/>
+                    </Button>
+                </StackPanel>
+                <Border VerticalAlignment="Bottom" Height="1" Margin="36,0,36,0" Background="{StaticResource LineBrush}"/>
+            </Grid>
+
+            <Grid Grid.Row="1">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="248"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- the steps, as the menu's left-hand list -->
+                <DockPanel Grid.Column="0" Margin="30,22,10,22">
+                    <StackPanel DockPanel.Dock="Bottom">
+                        <Border x:Name="UpdatePill" Visibility="Collapsed" CornerRadius="6" Padding="12,9" Margin="0,0,0,12" Background="#401F58D2" BorderBrush="#B34E86EC" BorderThickness="1" Cursor="Hand" MouseLeftButtonUp="UpdatePill_Click">
+                            <StackPanel>
+                                <TextBlock x:Name="UpdateTitle" Text="Update available" FontWeight="SemiBold" FontSize="13" Foreground="White"/>
+                                <TextBlock x:Name="UpdateSub" Text="Click to get it" FontSize="11.5" Foreground="{StaticResource SoftBrush}"/>
+                            </StackPanel>
+                        </Border>
+                        <TextBlock x:Name="VersionText" FontSize="11" Foreground="{StaticResource DimBrush}"/>
+                        <TextBlock FontSize="10.5" Foreground="{StaticResource DimBrush}" Opacity="0.85" Margin="0,6,0,0"
+                                   Text="Not affiliated with or endorsed by Nintendo. Built on your own copy of the game, on your PC: nothing of it is shared."/>
+                    </StackPanel>
+                    <ItemsControl x:Name="StepList">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border x:Name="row" CornerRadius="6" Background="Transparent" Padding="14,0,12,0" Margin="0,0,0,6" Height="56">
+                                    <Grid>
+                                        <Border x:Name="bar" Width="3" CornerRadius="1.5" HorizontalAlignment="Left" Margin="-9,14" Background="White" Visibility="Collapsed"/>
+                                        <StackPanel VerticalAlignment="Center" Margin="0,0,24,0">
+                                            <TextBlock x:Name="title" Text="{Binding Title}" FontFamily="{StaticResource Display}" FontSize="16" Foreground="{StaticResource SoftBrush}" TextWrapping="NoWrap"/>
+                                            <TextBlock x:Name="sub" Text="{Binding Sub}" FontSize="11.5" Foreground="{StaticResource DimBrush}" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap"/>
+                                        </StackPanel>
+                                        <TextBlock x:Name="num" Text="{Binding Mark}" FontFamily="{StaticResource Display}" FontSize="14" Foreground="{StaticResource DimBrush}" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                                    </Grid>
+                                </Border>
+                                <DataTemplate.Triggers>
+                                    <DataTrigger Binding="{Binding State}" Value="1">
+                                        <Setter TargetName="row" Property="Background" Value="{StaticResource PanelBrush}"/>
+                                        <Setter TargetName="bar" Property="Visibility" Value="Visible"/>
+                                        <Setter TargetName="title" Property="Foreground" Value="White"/>
+                                        <Setter TargetName="num" Property="Foreground" Value="White"/>
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding State}" Value="2">
+                                        <Setter TargetName="title" Property="Foreground" Value="White"/>
+                                        <Setter TargetName="num" Property="Foreground" Value="{StaticResource GreenBrush}"/>
+                                    </DataTrigger>
+                                </DataTemplate.Triggers>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </DockPanel>
+
+                <!-- the pages -->
+                <Grid Grid.Column="1" Margin="22,22,36,26">
+
+                    <!-- setup -->
+                    <Grid x:Name="SetupPage">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <StackPanel Grid.Row="0">
+                            <TextBlock Text="Set up" FontFamily="{StaticResource Display}" FontSize="24"/>
+                            <TextBlock Margin="0,4,0,0" FontSize="13.5" Foreground="{StaticResource SoftBrush}"
+                                       Text="Wondershot is built right here on your PC from your own copy of Super Mario Bros. Wonder – Nintendo Switch 2 Edition. Point the builder at it and press Build."/>
+                        </StackPanel>
+
+                        <Grid Grid.Row="1" Margin="0,18,0,0">
+                            <Border CornerRadius="6" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource EdgeBrush}" BorderThickness="1"/>
+                            <Border x:Name="DropGlow" CornerRadius="6" Background="#331F58D2" BorderBrush="#B34E86EC" BorderThickness="1" Visibility="Collapsed"/>
+                            <StackPanel Margin="26,22" HorizontalAlignment="Center">
+                                <TextBlock x:Name="DropTitle" Text="Drop your game here" FontFamily="{StaticResource Display}" FontSize="19" TextWrapping="NoWrap" HorizontalAlignment="Center"/>
+                                <TextBlock x:Name="DropSub" Text="a folder with exefs and romfs, or the game's .nup file" FontSize="12.5" Foreground="{StaticResource DimBrush}" TextWrapping="NoWrap" HorizontalAlignment="Center" Margin="0,2,0,0"/>
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,16,0,0">
+                                    <Button Content="Choose folder…" Style="{StaticResource GlassButton}" Click="ChooseFolder_Click" Margin="0,0,10,0"/>
+                                    <Button Content="Choose .nup file…" Style="{StaticResource GlassButton}" Click="ChooseNup_Click"/>
+                                </StackPanel>
+                            </StackPanel>
+                        </Grid>
+
+                        <StackPanel Grid.Row="2" Margin="0,16,0,0">
+                            <Border x:Name="StatusPill" CornerRadius="6" Padding="14,10" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource EdgeBrush}" BorderThickness="1">
+                                <StackPanel Orientation="Horizontal">
+                                    <Grid Width="20" Height="20" Margin="0,0,12,0" VerticalAlignment="Center">
+                                        <Ellipse x:Name="StatusDot" Fill="#7C8AA0"/>
+                                        <Path x:Name="StatusIcon" Stroke="White" StrokeThickness="1.8" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                                              Stretch="None" HorizontalAlignment="Center" VerticalAlignment="Center" Data="M1,5.5 L10,5.5"/>
+                                    </Grid>
+                                    <TextBlock x:Name="StatusText" Text="Waiting for your game" FontSize="13.5" VerticalAlignment="Center" TextWrapping="Wrap" MaxWidth="560"/>
+                                </StackPanel>
+                            </Border>
+                            <Border x:Name="InstalledStrip" Visibility="Collapsed" CornerRadius="6" Padding="14,10" Margin="0,10,0,0" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource EdgeBrush}" BorderThickness="1">
+                                <DockPanel LastChildFill="True">
+                                    <Button DockPanel.Dock="Right" Content="Play" Style="{StaticResource PinkButton}" Padding="24,6" FontSize="14" Click="PlaySetup_Click" Margin="12,0,0,0"/>
+                                    <StackPanel VerticalAlignment="Center">
+                                        <TextBlock x:Name="InstalledTitle" Text="Wondershot is installed here" FontWeight="Bold" FontSize="14"/>
+                                        <TextBlock x:Name="InstalledSub" FontSize="12" Foreground="{StaticResource SoftBrush}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
+                                    </StackPanel>
+                                </DockPanel>
+                            </Border>
+                            <TextBlock Text="INSTALL TO" Style="{StaticResource SectionLabel}" Margin="2,20,0,6"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <Border CornerRadius="6" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource EdgeBrush}" BorderThickness="1" Padding="14,10" Margin="0,0,10,0">
+                                    <TextBlock x:Name="OutText" FontSize="13.5" Foreground="{StaticResource SoftBrush}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
+                                </Border>
+                                <Button Grid.Column="1" Content="Change…" Style="{StaticResource GlassButton}" Click="ChangeOut_Click"/>
+                            </Grid>
+                        </StackPanel>
+
+                        <DockPanel Grid.Row="3" LastChildFill="False">
+                            <TextBlock x:Name="BuildHint" DockPanel.Dock="Left" Width="262" FontSize="12.5" Foreground="{StaticResource DimBrush}" VerticalAlignment="Center"
+                                       Text="The first build takes a while (your PC recompiles the whole game, and fetches the build tools once). After that, just press Play."/>
+                            <Button x:Name="BuildButton" DockPanel.Dock="Right" Content="Build Wondershot" Style="{StaticResource PinkButton}" Width="320" Height="48" Click="Build_Click" IsEnabled="False"/>
+                        </DockPanel>
+                    </Grid>
+
+                    <!-- building -->
+                    <Grid x:Name="BuildPage" Visibility="Collapsed">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <StackPanel>
+                            <TextBlock x:Name="BuildTitle" Text="Building…" FontFamily="{StaticResource Display}" FontSize="24" TextWrapping="NoWrap"/>
+                            <TextBlock x:Name="BuildSub" Margin="0,4,0,0" FontSize="13.5" Foreground="{StaticResource SoftBrush}" Text="Starting"/>
+                        </StackPanel>
+                        <StackPanel Grid.Row="1" Margin="0,26,0,0">
+                            <ProgressBar x:Name="Bar" Value="0"/>
+                            <DockPanel Margin="2,8,2,0">
+                                <TextBlock x:Name="BarEta" DockPanel.Dock="Right" FontSize="13" Foreground="{StaticResource DimBrush}"/>
+                                <TextBlock x:Name="BarPercent" FontSize="13" Foreground="White" FontWeight="SemiBold"/>
+                            </DockPanel>
+                        </StackPanel>
+                        <Grid Grid.Row="2" Margin="0,16,0,0">
+                            <Border CornerRadius="6" Background="#38000000" BorderBrush="{StaticResource EdgeBrush}" BorderThickness="1">
+                                <TextBox x:Name="LogBox" Background="Transparent" BorderThickness="0" Foreground="#E6EBF2" FontFamily="Cascadia Mono, Consolas" FontSize="11.5"
+                                         IsReadOnly="True" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" TextWrapping="NoWrap" Padding="14,10"/>
+                            </Border>
+                        </Grid>
+                        <DockPanel Grid.Row="3" Margin="0,18,0,0" LastChildFill="False">
+                            <Button DockPanel.Dock="Right" Content="Cancel" Style="{StaticResource GlassButton}" Click="Cancel_Click" Width="120" Height="40"/>
+                            <TextBlock DockPanel.Dock="Left" Width="440" FontSize="12.5" Foreground="{StaticResource DimBrush}" VerticalAlignment="Center"
+                                       Text="You can leave this running in the background. If it is stopped, press Build again: it picks up where it left off."/>
+                        </DockPanel>
+                    </Grid>
+
+                    <!-- done -->
+                    <Grid x:Name="DonePage" Visibility="Collapsed">
+                        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+                            <TextBlock Text="Ready to play" FontFamily="{StaticResource Display}" FontSize="30" HorizontalAlignment="Center"/>
+                            <TextBlock x:Name="DoneText" HorizontalAlignment="Center" TextAlignment="Center" Margin="0,6,0,0" FontSize="13.5" Foreground="{StaticResource SoftBrush}" MaxWidth="520"/>
+                            <Button Content="Play" Style="{StaticResource PinkButton}" Width="280" Height="52" Margin="0,26,0,0" Click="Play_Click" FontSize="20"/>
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,16,0,0">
+                                <Button Content="Open folder" Style="{StaticResource GlassButton}" Click="OpenFolder_Click" Margin="0,0,10,0"/>
+                                <Button Content="Build again" Style="{StaticResource GlassButton}" Click="Again_Click"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Grid>
+
+                    <!-- stopped -->
+                    <Grid x:Name="ErrorPage" Visibility="Collapsed">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <StackPanel>
+                            <TextBlock Text="That didn't work" FontFamily="{StaticResource Display}" FontSize="24" TextWrapping="NoWrap"/>
+                            <TextBlock Text="Nothing of your game was changed. Here is why it stopped:" FontSize="13.5" Foreground="{StaticResource SoftBrush}" Margin="0,4,0,0"/>
+                        </StackPanel>
+                        <Border Grid.Row="1" Margin="0,18,0,0" CornerRadius="6" Background="#38000000" BorderBrush="{StaticResource EdgeBrush}" BorderThickness="1">
+                            <TextBox x:Name="ErrorBox" Background="Transparent" BorderThickness="0" Foreground="#F0F3F8" FontSize="13.5" IsReadOnly="True"
+                                     TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" Padding="18,14"/>
+                        </Border>
+                        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
+                            <Button Content="Copy details" Style="{StaticResource GlassButton}" Click="CopyLog_Click" Margin="0,0,10,0" Height="40"/>
+                            <Button Content="Back" Style="{StaticResource PinkButton}" Width="140" Height="40" Click="Back_Click" FontSize="15"/>
+                        </StackPanel>
+                    </Grid>
+                </Grid>
+            </Grid>
+        </Grid>
+    </Border>
+</Window>
