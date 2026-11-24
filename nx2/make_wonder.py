@@ -168,12 +168,22 @@ def installed_version(tools):
         return "dev"
 
 
+PRE_STAGES = ("alpha", "beta", "rc")   # (a pre-release's kinds, in order: v1.0.0-alpha2 < -beta1 < -rc1 < v1.0.0)
+
+
 def version_key(tag):
-    """(numbers, final) of v1.2.3 or 1.2.3-rc1: a release candidate comes before its release"""
+    """(numbers, final, stage, its number) of v1.2.3, v1.2.3-alpha2 or 1.2.3-rc1: pre-releases come before their release, in
+    PRE_STAGES order, then by their number"""
     m = re.match(r"v?(\d+(?:\.\d+)*)(.*)$", tag.strip())
     if not m:
         return None
-    return (tuple(int(n) for n in m.group(1).split(".")), 0 if m.group(2).lstrip("-+.").strip() else 1)
+    numbers = tuple(int(n) for n in m.group(1).split("."))
+    pre = m.group(2).lstrip("-+.").strip().lower()
+    if not pre:
+        return (numbers, 1, 0, 0)
+    pm = re.match(r"([a-z]*)\.?(\d*)", pre)
+    stage = PRE_STAGES.index(pm.group(1)) if pm.group(1) in PRE_STAGES else 0
+    return (numbers, 0, stage, int(pm.group(2) or 0))
 
 
 def newer(tag, have):
@@ -197,9 +207,10 @@ def check_update(tools):
         say("@@update", "dev")
         return
     try:
-        release = github_json("https://api.github.com/repos/%s/releases/latest" % REPO)
+        # (every release, pre-releases too: GitHub's /releases/latest leaves those out, and the alphas are pre-releases)
+        releases = github_json("https://api.github.com/repos/%s/releases?per_page=30" % REPO)
     except urllib.error.HTTPError as error:
-        if error.code == 404:   # (no release yet)
+        if error.code == 404:   # (no such repository yet)
             say("@@update", "current", have)
         else:
             say("@@update", "unknown", "GitHub said %d" % error.code)
@@ -207,8 +218,13 @@ def check_update(tools):
     except (OSError, ValueError) as error:
         say("@@update", "unknown", str(error).replace("\n", " "))
         return
-    tag = str(release.get("tag_name", ""))
-    url = str(release.get("zipball_url", ""))
+    tag, url = "", ""
+    for release in releases if isinstance(releases, list) else []:
+        t, u = str(release.get("tag_name", "")), str(release.get("zipball_url", ""))
+        if release.get("draft") or not t or not u or version_key(t) is None:
+            continue
+        if not tag or version_key(t) > version_key(tag):
+            tag, url = t, u
     if tag and url and newer(tag, have):
         say("@@update", "available", tag, url)
     else:
