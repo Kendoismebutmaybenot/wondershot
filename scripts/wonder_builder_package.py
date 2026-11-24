@@ -100,7 +100,7 @@ def main():
     p.add_argument("--publish", required=True)
     p.add_argument("--zip")
     p.add_argument("--version")
-    p.add_argument("--renhdrum", help="renhdrum.dll (scripts/renhdrum.py build): RenHDrum's DualSense and Xbox haptics, in the package")
+    p.add_argument("--renhdrum", help="renhdrum.dll (scripts/renhdrum.py build): RenHDrum's DualSense haptics, in the package")
     return package(p.parse_args())
 
 

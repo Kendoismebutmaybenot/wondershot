@@ -530,7 +530,7 @@ def assemble(out, work, tools, dlc, romfs, exefs):
             p = os.path.join(third, sub, n)
             if os.path.isfile(p):
                 shutil.copy2(p, os.path.join(out, n))
-    for n in ("renhdrum.dll",):   # (optional: RenHDrum's DualSense and Xbox haptics. Without it every pad keeps its plain motors)
+    for n in ("renhdrum.dll",):   # (optional: RenHDrum's DualSense haptics. Without it every pad keeps its plain motors)
         for d in (build_dir, os.path.join(ROOT, "third_party", "renhdrum"), os.path.join(tools, "third_party", "renhdrum")):
             p = os.path.join(d, n)
             if os.path.isfile(p):
