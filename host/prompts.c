@@ -176,6 +176,7 @@ static unsigned stick_shows(int i, const int *move) {
 }
 
 static int keyboard_built;   /* (the build made the keyboard face: prompts/keyboard/; choose_face) */
+static int wonder_ext_font;   /* (Wondershot: the extension font is served, hos_prompts_ext_font: its keyboard face is built in) */
 
 /* Auto's face: the first controller's (by SDL's name and type: sdl, the SDL it came from); with none, and none through XInput
    either, the keyboard's */
@@ -188,7 +189,7 @@ static int choose_face(const char *dir) {
     char path[MAX_PATH], line[80];
     int choice = 0;
     snprintf(path, sizeof path, "%sprompts/keyboard", dir);
-    keyboard_built = GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
+    keyboard_built = wonder_ext_font || GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;   /* (Wonder's font: keys built in) */
     FILE *f = fopen(hos_options_file(), "r");   /* (host/options_path.c) */
     if (f) {
         while (fgets(line, sizeof line, f))
@@ -1206,12 +1207,140 @@ static int live_face(void) {
     return auto_face(name, sdl, type);
 }
 
+/* ---- (Wondershot) Wonder draws every button icon in a text from the Switch's system extension font (nn::pl built-in font type 5,
+   nintendo_ext_003), not from its RomFS. host/nn_applet.c serves prompts/wonder_ext.ttf in the game folder for it (made by
+   nx2/wonder_prompt_font.py: the icons drawn as SuperWonders draws them), here: a plain TrueType font at a guest address of
+   ours, with Longshot's layout (each face's icons at PAD_BASE + FACE_CODES x face + HOS_PAD_*, each key's at KEY_BASE + its
+   code, and each code point Wonder's texts use in a format 4 segment of its own). So the face and the controls are the same
+   idDelta writes as OoT's, made in the game's own copy whenever they change (hos_prompts_live). */
+/* Wonder's code points that show a Switch button (nx2/wonder_prompt_font.py WONDER "sw"), and the button: the filled and the
+   outlined A B X Y L R ZL ZR + -, the d-pad's ways, the face button at the right, bottom, top, left (A B X Y on a Switch) */
+static const uint16_t wonder_sw_code[] = {0xE0E0, 0xE0E1, 0xE0E2, 0xE0E3, 0xE0E4, 0xE0E5, 0xE0E6, 0xE0E7, 0xE0EF, 0xE0F0,
+                                          0xE0EB, 0xE0EC, 0xE0ED, 0xE0EE, 0xE0AB, 0xE0AC, 0xE0AD, 0xE0AE,
+                                          0xE0A0, 0xE0A1, 0xE0A2, 0xE0A3, 0xE0A4, 0xE0A5, 0xE0A6, 0xE0A7, 0xE0B3, 0xE0B4,
+                                          0xE0AF, 0xE0B0, 0xE0B1, 0xE0B2, 0xE0F1, 0xE0F2};
+static const unsigned char wonder_sw_button[] = {
+    HOS_SW_A, HOS_SW_B, HOS_SW_X, HOS_SW_Y, HOS_SW_L, HOS_SW_R, HOS_SW_ZL, HOS_SW_ZR, HOS_SW_PLUS, HOS_SW_MINUS,
+    HOS_SW_UP, HOS_SW_DOWN, HOS_SW_LEFT, HOS_SW_RIGHT, HOS_SW_A, HOS_SW_B, HOS_SW_X, HOS_SW_Y,
+    HOS_SW_A, HOS_SW_B, HOS_SW_X, HOS_SW_Y, HOS_SW_L, HOS_SW_R, HOS_SW_ZL, HOS_SW_ZR, HOS_SW_PLUS, HOS_SW_MINUS,
+    HOS_SW_UP, HOS_SW_DOWN, HOS_SW_LEFT, HOS_SW_RIGHT, HOS_SW_PLUS, HOS_SW_MINUS};
+/* the sticks (WONDER "pad"): the face's stick, whatever is bound (moving a stick is no binding) */
+static const uint16_t wonder_pad_code[] = {0xE101, 0xE102, 0xE0C1, 0xE0C2};
+static const unsigned char wonder_pad[] = {HOS_PAD_LSTICK, HOS_PAD_RSTICK, HOS_PAD_LSTICK, HOS_PAD_RSTICK};
+static struct { uint64_t at, n; int face, bind[BINDS]; } ext = {0, 0, -1, {0}};
+
+/* the face and the controls into a format 4 subtable of the font (as cmap4_bind); how many buttons bound */
+static int wonder_cmap4_bind(uint8_t *st, size_t n, int face) {
+    const unsigned segs = rd16(st + 6) / 2;
+    if (14 + 8 * (size_t)segs + 2 > n) return 0;
+    const unsigned base = PAD_BASE + FACE_CODES * (unsigned)face;
+    const int keys = face == HOS_PROMPT_KEYBOARD;
+    int done = 0;
+    for (size_t i = 0; i < sizeof wonder_sw_code / sizeof *wonder_sw_code; i++) {
+        const int b = wonder_sw_button[i];
+        const int k = keys ? first_key(b) : 0;
+        const unsigned kid = k ? cmap4_glyph(st, n, KEY_BASE + (unsigned)k) : 0;
+        if (kid && cmap4_point(st, segs, wonder_sw_code[i], kid)) {
+            done += i < 14;
+            continue;
+        }
+        const int pad = hos_binding(HOS_BIND_PAD, b, 0), bound = pad >= 0 && pad < HOS_PAD_ART_N;   /* (a paddle: the default's) */
+        const unsigned gid = cmap4_glyph(st, n, base + (unsigned)(bound ? pad : switch_pad[b]));
+        if (gid && cmap4_point(st, segs, wonder_sw_code[i], gid)) done += bound && !keys && i < 14;
+    }
+    for (size_t i = 0; i < sizeof wonder_pad_code / sizeof *wonder_pad_code; i++) {
+        const unsigned gid = cmap4_glyph(st, n, base + wonder_pad[i]);
+        if (gid) cmap4_point(st, segs, wonder_pad_code[i], gid);
+    }
+    return done;
+}
+
+/* the font's format 4 subtables bound (as bind_font, on a plain TrueType font); -1 none found */
+static int wonder_bind(uint8_t *ttf, size_t n, int face) {
+    if (n < 12) return -1;
+    const unsigned tables = rd16(ttf + 4);
+    for (unsigned t = 0; t < tables && 12 + 16 * (size_t)(t + 1) <= n; t++) {
+        const uint8_t *rec = ttf + 12 + 16 * t;
+        if (memcmp(rec, "cmap", 4)) continue;
+        const uint32_t off = rd32(rec + 8), len = rd32(rec + 12);
+        if (off > n || len > n - off || len < 4) return -1;
+        uint8_t *cmap = ttf + off;
+        int done = -1;
+        for (unsigned s = 0; s < rd16(cmap + 2) && 4 + 8 * (size_t)(s + 1) <= len; s++) {
+            const uint32_t so = rd32(cmap + 4 + 8 * s + 4);
+            if (so > len || len - so < 14 || rd16(cmap + so) != 4) continue;
+            const unsigned sl = rd16(cmap + so + 2);
+            done = wonder_cmap4_bind(cmap + so, sl <= len - so ? sl : len - so, face);   /* (platforms 0 and 3 share one: twice) */
+        }
+        return done;
+    }
+    return -1;
+}
+
+/* nn_applet.c, for the built-in font type 5: the font at a guest address (the game keeps reading it there), bound to the face
+   and the controls; 0 without prompts/wonder_ext.ttf (the game folder's: nx2/wonder_prompt_font.py) */
+int hos_prompts_ext_font(uint64_t *addr, uint64_t *size) {
+    if (ext.at) return *addr = ext.at, *size = ext.n, 1;
+    char dir[MAX_PATH], path[MAX_PATH];
+    if (!game_dir(dir, sizeof dir)) return 0;
+    snprintf(path, sizeof path, "%sprompts/wonder_ext.ttf", dir);
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        hos_log("prompts: no %s (nx2/wonder_prompt_font.py makes it): the button icons are missing", path);
+        return 0;
+    }
+    fseek(f, 0, SEEK_END);
+    const long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    const uint64_t a = n > 12 ? hos_sys_alloc(((uint64_t)n + 0xFFF) & ~0xFFFull, 0x1000) : 0;
+    const int ok = a && fread(GP(a), 1, (size_t)n, f) == (size_t)n;
+    fclose(f);
+    if (!ok) return 0;
+    wonder_ext_font = 1;
+    const int face = choose_face(dir);
+    const int bound = wonder_bind((uint8_t *)GP(a), (size_t)n, face);
+    if (bound < 0) {
+        hos_log("prompts: %s has no format 4 cmap: the icons as built", path);
+    }
+    current_binds(ext.bind);
+    ext.face = live_face_now = face;
+    memcpy(live_bind_now, ext.bind, sizeof live_bind_now);
+    ext.n = (uint64_t)n;
+    ext.at = a;
+    hos_log("prompts: the extension font: %s icons, %d buttons on these %s (%ld bytes at %#llx)", faces[face], bound,
+            face == HOS_PROMPT_KEYBOARD ? "keys" : "pad's controls", n, (unsigned long long)a);
+    *addr = a, *size = (uint64_t)n;
+    return 1;
+}
+
+/* hos_prompts_live for Wonder: a new face or new controls written into the game's copy of the font */
+static void wonder_live(void) {
+    int bind[BINDS];
+    current_binds(bind);
+    const int face = live_face();
+    if (face == ext.face && !memcmp(bind, ext.bind, sizeof bind)) return;
+    const int bound = wonder_bind((uint8_t *)GP(ext.at), (size_t)ext.n, face);
+    ext.face = live_face_now = face;
+    memcpy(ext.bind, bind, sizeof bind);
+    memcpy(live_bind_now, bind, sizeof live_bind_now);
+    hos_log("prompts: now the %s icons in texts, %d buttons on these controls", faces[face], bound);
+}
+
 /* nn_hid.c, as the game reads its controller (every frame; looked at every 100 ms): the face or the controls changed, or a
    part found since that still shows what was before? */
 int hos_prompts_live_parts(void);
 void hos_prompts_live(void) {
     static volatile LONG busy;
     static int64_t last;
+    if (ext.at) {   /* (Wondershot: the extension font alone) */
+        const int64_t now = hos_now_ns();
+        if (now - last >= 100000000 && !InterlockedCompareExchange(&busy, 1, 0)) {
+            last = now;
+            wonder_live();
+            InterlockedExchange(&busy, 0);
+        }
+        return;
+    }
     const int pool = __atomic_load_n(&tex.l.base, __ATOMIC_ACQUIRE) != 0;   /* (hos_prompts_pool: lo and hi set before) */
     if (live_face_now < 0 || (!pool && !lay_n && !font.at) || InterlockedCompareExchange(&busy, 1, 0)) return;
     const int64_t now = hos_now_ns();
@@ -1259,6 +1388,7 @@ static volatile LONG romfs_state[3];
 /* what the Insert menu's Button prompts row can change at once (vk_api.h HOS_PROMPTS_LIVE_*): the parts the game has loaded
    from files served here, found, and the ones none was served for (a restart changes them no more); 0 with none found */
 int hos_prompts_live_parts(void) {
+    if (ext.at) return HOS_PROMPTS_LIVE_ALL;   /* (Wondershot: every icon is in the extension font, re-pointed at once) */
     const int found = (tex.l.base ? HOS_PROMPTS_LIVE_TEXTURES : 0) | (lay.base ? HOS_PROMPTS_LIVE_LAYOUTS : 0) |
                       (font.at ? HOS_PROMPTS_LIVE_TEXTS : 0);
     if (!found) return 0;

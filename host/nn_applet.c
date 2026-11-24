@@ -408,11 +408,19 @@ static void nx_font_load(void) {
     if (!nx_font_addr) { nx_font_addr = hos_sys_alloc(0x1000, 0x1000); hos_log("pl: no system font file found: an empty one"); }
 }
 HLE(_ZN2nn2pl17RequestLoadNxFontEPvm) {}
+/* The types, as Wonder's loader (f_808a1d90) names them: 0 nintendo_udsg-r_std, 1 org_zh-cn, 2 ext_zh-cn, 3 zh-tw, 4 ko, 5
+   nintendo_ext (the button icons: host/prompts.c serves the game folder's prompts/wonder_ext.ttf for it, bound to the
+   controller in use; without it the stand-in text font, which has no icons: "?") */
+int hos_prompts_ext_font(uint64_t *addr, uint64_t *size);   /* prompts.c */
 HLE(_ZN2nn2pl18GetBuiltInFontDataEPNS0_17BuiltInFontDataNxENS0_17BuiltInFontTypeNxEb) {
-    nx_font_load();
+    uint64_t addr = 0, size = 0;
+    const int type = (int)ARG(1);
+    static unsigned asked;
+    if (type >= 0 && type < 32 && !(asked >> type & 1)) asked |= 1u << type, hos_log("pl: NX built-in font %d asked for", type);
+    if (type != 5 || !hos_prompts_ext_font(&addr, &size)) nx_font_load(), addr = nx_font_addr, size = nx_font_size;
     G64(ARG(0) + 0x00) = 0;
-    G64(ARG(0) + 0x08) = nx_font_addr;   /* address (f_808a1d90 returns this field) */
-    G64(ARG(0) + 0x10) = nx_font_size;   /* size (and stores this one through its out pointer) */
+    G64(ARG(0) + 0x08) = addr;   /* address (f_808a1d90 returns this field) */
+    G64(ARG(0) + 0x10) = size;   /* size (and stores this one through its out pointer) */
     RET(1);
 }
 /* (Wonder, Switch 2) the Ounce built-in fonts: the same out struct as the NX one; the same stand-in font. */
