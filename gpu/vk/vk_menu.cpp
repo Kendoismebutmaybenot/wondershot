@@ -999,14 +999,15 @@ void save() {
                 int c; while ((c = fgetc(f)) != '\n' && c != EOF) {}
                 continue;
             }
-            if (!strncmp(line, "pad_", 4) || !strncmp(line, "key_", 4) || !strncmp(line, "toggle_", 7)) {
+            if (!strncmp(line, "pad_", 4) || !strncmp(line, "key_", 4) || !strncmp(line, "toggle_", 7) ||
+                (!strncmp(line, "pad", 3) && line[3] >= '2' && line[3] <= '4' && line[4] == '_')) {   // (Wondershot: players 2 to 4)
                 kept += line;
                 continue;
             }
             const char* eq = strchr(line, '=');
             if (!eq || eq == line) continue;
             const std::string key(line, (size_t)(eq - line));
-            if (key == "sprint_auto_bind" && !can_bind()) {
+            if ((key == "sprint_auto_bind" || key.rfind("player_pad", 0) == 0) && !can_bind()) {
                 kept += line;
                 continue;
             }
@@ -1015,7 +1016,7 @@ void save() {
             bool mine = key == "audio_output_device_id" || key == "audio_output_device_name" || key == "output_device" ||
                         key == "microphone_device" || key == "options_version" || key == "memory_budget" || key == "auto_for" ||
                         key == "auto_tuned" || key == "auto_output" || key == "auto_steps";
-            mine |= key == "sprint_auto_bind";
+            mine |= key == "sprint_auto_bind" || key.rfind("player_pad", 0) == 0;   // (Wondershot: the pads' names by player, written below)
             mine |= key == "fullscreen_monitor_id";
             mine |= key == "fullscreen_monitor_name";
             // (and the Mesh shaders row's line, no longer read (gpu/vk/mesh_mode.h): dropped, not kept for nothing)
@@ -1040,7 +1041,8 @@ void save() {
                 // ultrawide= is kept, unless the row was changed in the menu)
                 const int v = saved_value(r.value);
                 fprintf(f, "%s=%d\n", ini_key(r), env_holds(&opts.output_res) && v == aspect_started ? ultrawide_read : aspect_follows_host(v) ? 1 : 0);
-            } else if (r.value && r.value != &opts.game_lang && r.value != &output_pick && r.value != &monitor_pick) { // Device choices are saved by ID below.
+            } else if (r.value && r.value != &opts.game_lang && r.value != &output_pick && r.value != &monitor_pick &&
+                       r.value != &opts.ctl_player) { // Device choices are saved by ID below. (The Controls page's player: not saved)
                 fprintf(f, "%s=%d\n", ini_key(r), saved_value(r.value));
             }
         }
@@ -1084,6 +1086,17 @@ void save() {
             if (i < HOS_SW_N || i == HOS_KEY_SPRINT) fprintf(f, "toggle_%s=%d\n", bind_names[i], toggle_on(i) ? 1 : 0);
             fprintf(f, "key_%s=%d,%d\n", bind_names[i], host->binding(HOS_BIND_KEY, i, 0), host->binding(HOS_BIND_KEY, i, 1));
         }
+        for (int p = 0; p < 4 && can_bind() && host->pad_wanted; p++) {   // (Wondershot: the pad each player was given, by name)
+            char nm[128];
+            if (host->pad_wanted(p, nm, sizeof nm) && nm[0]) fprintf(f, "player_pad%d=%s\n", p + 1, nm);
+        }
+        for (int p = 1; p < 4 && can_bind(); p++)   // (Wondershot: players 2 to 4's pads, pad2_<button>= ..)
+            for (int i = 0; i < HOS_SW_N; i++) {
+                const int set = HOS_BIND_PAD_P2 + p - 1, alternate = host->binding(set, i, 1);
+                fprintf(f, "pad%d_%s=%d", p + 1, bind_names[i], host->binding(set, i, 0));
+                if (alternate >= 0) fprintf(f, ",%d", alternate);
+                fputc('\n', f);
+            }
     };
     // (written beside its target, a link followed so that a synced file stays linked, as <name>.new, and moved over it once
     // whole: written in place, a full disk or a close mid-write left it cut short, and the next start took the defaults past
@@ -1522,6 +1535,10 @@ const Control controls[] = {{HOS_SW_A, "A"}, {HOS_SW_B, "B"}, {HOS_SW_X, "X"}, {
                             {HOS_KEY_OC_NOTE_Y, "Ocarina note (Y)"}, {HOS_KEY_OC_NOTE_X, "Ocarina note (X)"},
                             {HOS_KEY_TOGGLE_HUD, "Toggle HUD"}};
 constexpr int kControls = sizeof controls / sizeof controls[0];   // (then "Reset to defaults")
+// (Wondershot) players 2 to 4 have the Switch's buttons on their pads, and no keys, toggles, sprint or notes: the grid shows the
+// first HOS_SW_N controls, Input 1 and 2 only, and binds through their own set (host/nn_hid.c)
+int ctl_n() { return ctl_keyboard() ? kControls : HOS_SW_N; }
+int pad_set() { return ctl_pad_set(); }
 // (the stick's and camera's directions and Walk: keys only; the ocarina's note rows and Sprint take a gamepad input too,
 // host/nn_hid.c)
 bool keys_only(int i) {
@@ -2687,19 +2704,19 @@ void draw_controls(ui::Ctx& c) {
     bool narrow;
     columns(c, &cx0, &cx1, &hx0, &hx1, &narrow);
     column(c, cx0, cx1, hh);
-    const int n = top_rows() + kControls + 1, sel_i = csel - top_rows();   // (sel_i: the control's, kControls Reset; negative: a page row)
+    const int n = top_rows() + ctl_n() + 1, sel_i = csel - top_rows();   // (sel_i: the control's, ctl_n() Reset; negative: a page row)
     const ui::Prompt idle[] = {{ui::kUpDown, "Choose"}, {ui::kLeftRight, "Column"}, {ui::kConfirm, "Bind"}, {ui::kKey, "Clear", "Del"},
                                {ui::kBack, "Back"}};
     const ui::Prompt option[] = {{ui::kUpDown, "Choose"}, {ui::kLeftRight, "Change"}, {ui::kBack, "Back"}};
     const ui::Prompt wait[] = {{ui::kBack, "Cancel"}};
     const float bar_top = ui::prompt_bar_top(c);   // (the strip itself drawn last, over all: below)
     const Row* page_row = sel_i < 0 ? &rows[tab_row_to_global(TAB_PAGE, csel)] : nullptr;
-    const bool l3_sprints = opts.sprint && sel_i >= 0 && sel_i < kControls && controls[sel_i].button == HOS_SW_LS &&
+    const bool l3_sprints = opts.sprint && ctl_keyboard() && sel_i >= 0 && sel_i < kControls && controls[sel_i].button == HOS_SW_LS &&
                             (host->binding(HOS_BIND_PAD, HOS_KEY_SPRINT, 0) == HOS_PAD_LSTICK ||
                              host->binding(HOS_BIND_PAD, HOS_KEY_SPRINT, 1) == HOS_PAD_LSTICK) &&
                             host->binding(HOS_BIND_PAD, HOS_KEY_TOGGLE_HUD, 0) != HOS_PAD_LSTICK &&
                             host->binding(HOS_BIND_PAD, HOS_KEY_TOGGLE_HUD, 1) != HOS_PAD_LSTICK;
-    const char* title = page_row ? page_row->name : sel_i < kControls ? controls[sel_i].name : "Reset to defaults";
+    const char* title = page_row ? page_row->name : sel_i < ctl_n() ? controls[sel_i].name : "Reset to defaults";
     const char* help = listening ? (listening == 1 ? "Press the gamepad button to use. Esc cancels." : "Press the key to use. Esc cancels.")
                        : page_row ? page_row->help
                        : sel_i < kControls && controls[sel_i].button == HOS_KEY_SPRINT && ccol == kCtlToggle
@@ -2762,7 +2779,7 @@ void draw_controls(ui::Ctx& c) {
             hits.add(rx0, y0, rx1, y1, menu_hit::kCtlOption, j, opt_x, rx1);
             continue;
         }
-        if (i == kControls) {
+        if (i == ctl_n()) {
             ui::button(c, ImVec2(rx0, y), ImVec2(pad_x - 8 * s, y + rh), "Reset to defaults", sel);
             hits.add(rx0, y0, pad_x - 8 * s, y1, menu_hit::kCtlRow, i);
             continue;
@@ -2773,10 +2790,10 @@ void draw_controls(ui::Ctx& c) {
         const bool keys = keys_only(i);
         for (int col = kCtlPrimary; col < kCtlColumns; col++) {
             const bool keyboard = col == kCtlKeyboard, toggle = col == kCtlToggle;
-            const bool disabled = (keys && !keyboard) || (toggle && !has_toggle(ctl.button));
+            const bool disabled = (keys && !keyboard) || (toggle && !has_toggle(ctl.button)) || (!ctl_keyboard() && (keyboard || toggle));
             const float a = col_x[col] + (col == kCtlPrimary ? 0 : 3 * s), b = col_x[col + 1] - (toggle ? 0 : 3 * s);
             const std::string v = disabled ? "-" : keyboard ? keys_text(ctl.button) : toggle
-                ? tx_onoff(toggle_on(ctl.button)) : pad_name(host->binding(HOS_BIND_PAD, ctl.button, col));
+                ? tx_onoff(toggle_on(ctl.button)) : pad_name(host->binding(pad_set(), ctl.button, col));
             const bool here = sel && col == (keys ? kCtlKeyboard : ccol);
             const ImVec2 va(a, y), vb(b, y + rh);
             if (here && listening) {   // (waiting for the new input: amber, the outline as a selected value's)
@@ -4987,11 +5004,17 @@ void menu_tick() {
         else if (listening) {
             if (press[5] || prof_now() > listen_end) listening = 0, changed = true;   // (Esc, or nothing for a while)
             else if (listening == 1) {
-                if (!listen_armed) listen_armed = (raw & ~(1u << HOS_PAD_GUIDE)) == 0;
-                else if (const uint32_t p = pad_press & ~(1u << HOS_PAD_GUIDE) & ~(1u << HOS_PAD_TOUCHPAD)) {
+                // (Wondershot: for players 2 to 4 the presses of their own pad, not the merged one the menu goes by)
+                uint32_t lraw = host->pad_raw_player ? host->pad_raw_player(opts.ctl_player) : 0;
+                if (!lraw && ctl_keyboard() && !(host->players && host->players())) lraw = raw;   // (a pad not numbered yet)
+                static uint32_t lheld;
+                const uint32_t lpress = lraw & ~lheld;
+                lheld = lraw;
+                if (!listen_armed) listen_armed = (lraw & ~(1u << HOS_PAD_GUIDE)) == 0;
+                else if (const uint32_t p = lpress & ~(1u << HOS_PAD_GUIDE) & ~(1u << HOS_PAD_TOUCHPAD)) {
                     int bit = 0;
                     while (!(p >> bit & 1)) bit++;
-                    host->bind(HOS_BIND_PAD, controls[csel - top_rows()].button, ccol, bit);
+                    host->bind(pad_set(), controls[csel - top_rows()].button, ccol, bit);
                     listening = 0, changed = true;
                     opts.pad_layout = detect_pad_layout();
                     save();
@@ -5024,13 +5047,14 @@ void menu_tick() {
                 }
                 if (ptr.pressed & HOS_MOUSE_LEFT) {
                     if (option) press[hit.side < 0 ? 3 : 4] = true;   // (a value's halves: Left and Right; the name: Right)
-                    else if (hit.part == menu_hit::kCtlCell || (hit.part == menu_hit::kCtlRow && hit.index == kControls))
+                    else if (hit.part == menu_hit::kCtlCell || (hit.part == menu_hit::kCtlRow && hit.index == ctl_n()))
                         press[7] = true;   // (as Enter)
                 }
                 if (ptr.pressed & HOS_MOUSE_RIGHT) press[5] = true;
                 if (ptr.wheel) wheel_rows[kControlsSlot] += ptr.wheel, changed = true;   // (scrolls; the selection stays)
             }
-            const int n = top_rows() + kControls + 1;
+            const int n = top_rows() + ctl_n() + 1;
+            if (csel >= n) csel = n - 1;   // (a player with fewer rows than the one before)
             if (press[1]) csel = (csel + n - 1) % n, changed = true;
             if (press[2]) csel = (csel + 1) % n, changed = true;
             const int i = csel - top_rows();   // (i: the control's, or reset's)
@@ -5040,20 +5064,22 @@ void menu_tick() {
                 set_row(r, *r.value + (press[3] ? -r.step : r.step), press[3] ? -1 : 1);
                 changed = true;
             } else if (i >= 0) {
-                const int columns = i < kControls && has_toggle(controls[i].button) ? kCtlColumns : kCtlToggle;
-                if (ccol >= columns) ccol = kCtlKeyboard;   // (no toggle on pause, map, stick directions or ocarina notes)
-                if ((press[3] || press[4]) && i < kControls && !keys_only(i)) {
+                const int columns = !ctl_keyboard() ? kCtlKeyboard : i < kControls && has_toggle(controls[i].button) ? kCtlColumns : kCtlToggle;
+                if (ccol >= columns) ccol = !ctl_keyboard() ? kCtlPrimary : kCtlKeyboard;   // (no toggle on pause, map, stick directions or ocarina notes; players 2 to 4: two inputs)
+                if ((press[3] || press[4]) && i < ctl_n() && !keys_only(i)) {
                     ccol = (ccol + columns + (press[3] ? -1 : 1)) % columns;
                     changed = true;
                 }
                 const int col = keys_only(i) ? kCtlKeyboard : ccol;
                 if (press[7]) {
-                    if (i == kControls) {
-                        host->bind(HOS_BIND_PAD, -1, 0, 0);
+                    if (i == ctl_n()) {
+                        host->bind(pad_set(), -1, 0, 0);
                         opts.pad_layout = 0;
-                        opts.hold_toggle = 0;
-                        toggle_set(HOS_KEY_SPRINT, false);
-                        if (opts.sprint) apply_sprint_layout(true);   // (the defaults give Sprint nothing)
+                        if (ctl_keyboard()) {   // (the others: their pad controls alone)
+                            opts.hold_toggle = 0;
+                            toggle_set(HOS_KEY_SPRINT, false);
+                            if (opts.sprint) apply_sprint_layout(true);   // (the defaults give Sprint nothing)
+                        }
                         save();
                     }
                     else if (col == kCtlToggle) {
@@ -5063,10 +5089,10 @@ void menu_tick() {
                     else listening = col == kCtlKeyboard ? 2 : 1, listen_armed = false, listen_end = prof_now() + 6000000000LL;
                     changed = true;
                 }
-                if ((press[8] || press[9]) && i < kControls) {
+                if ((press[8] || press[9]) && i < ctl_n()) {
                     if (col == kCtlToggle) toggle_set(controls[i].button, false);
                     else if (col != kCtlKeyboard) {
-                        host->bind(HOS_BIND_PAD, controls[i].button, col, -1);
+                        host->bind(pad_set(), controls[i].button, col, -1);
                         opts.pad_layout = detect_pad_layout();
                     }
                     else for (int k = 0; k < 2; k++) host->bind(HOS_BIND_KEY, controls[i].button, k, 0);
@@ -5250,7 +5276,7 @@ void menu_tick() {
             else if (press[7] && r.setting && (r.setting->kind == menu::Kind::Action || r.setting->kind == menu::Kind::Page))
                 press[7] = false;   // (#1633: a module's button or page that did nothing (locked): not the bindings page below)
             else if (const FieldRow* f = press[7] ? field_row(r) : nullptr) edit_start(*f->field, f->apply), changed = true;   // (longshot)
-            else if (press[7] && !r.value && can_bind()) page = 1, csel = 0, ccol = menu_hit::kCtlPrimary, changed = true;
+            else if (press[7] && !r.value && can_bind()) page = 1, csel = 0, ccol = menu_hit::kCtlPrimary, changed = true, ctl_refresh();
             if (nfc_scan_moved()) changed = true;   // (a scan ends by itself: its line drawn again: gpu/vk/menu/nfc.cpp)
             if ((press[3] || press[4] || press[7]) && r.value) {   // (Enter, or A, as Right)
                 if (press[7]) press[4] = true;

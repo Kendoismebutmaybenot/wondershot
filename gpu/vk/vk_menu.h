@@ -118,6 +118,9 @@ struct Options {
     int gyro_inv_x = 0;   // the motion aim's horizontal turned around
     int gyro_inv_y = 0;   // the motion aim's vertical turned around
     int gyro_deadzone = 1;   // the motion's deadzone: 0 tight, 1 standard (the console's default), 2 loose
+    int kb_player = 0;    // (Wondershot) the player the keyboard and mouse (and the full controls) belong to, 0 to 3 (keyboard_player=)
+    int ctl_pad = 0;      // (Wondershot) the Controls page's Controller row: the pad the page's player has, 0 Auto, else its place in the host's list (not saved)
+    int ctl_player = 0;   // (Wondershot) the Controls page's player: 0 to 3, whose pad controls the grid shows (not saved)
     int prompts = 0;      // the button icons: 0 Auto (the controller), 1 Switch, 2 Xbox, 3 PS4, 4 PS5, 5 Steam Deck (host/prompts.c)
     int robust = 0;       // bounds-checked buffer access: 0 Auto (on), 1 Off, 2 On (gpu/vk/vk_main.cpp; RX_VK_ROBUST)
     int present_queue = 0;   // (longshot) Present queue (Debug tab): 0 Off, 1 On, the presents on a compute family's queue of

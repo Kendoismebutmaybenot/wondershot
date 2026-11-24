@@ -561,6 +561,17 @@ static _Thread_local int sprint_layout_update;
 static _Thread_local int sprint_frame, sprint_toggle_frame, sprint_excluded, input_in_front;
 static _Thread_local uint64_t injected_buttons;
 static int pad_bind[HOS_KEY_N][2];   /* (-1 for the keys-only controls, !has_pad) */
+/* (Wondershot) players 2 to 4: the Switch's buttons on their own pads (the keyboard and the mouse are player 1's), set from the
+   Controls page's player row through hos_bind(HOS_BIND_PAD_P2 + n) and kept as pad2_<button>= .. pad4_<button>= */
+static int pad_bind_p[3][HOS_SW_N][2];
+/* (Wondershot) the player the keyboard, the mouse and everything player 1's controls had (sprint, toggles, notes) belong to, 0 to
+   3: the Controls page's Keyboard and mouse row (keyboard_player=). That player's pad is merged with them, through the full
+   controls (pad_bind); the other players' pads go through pad_bind_p, in player order without the keyboard's */
+static volatile LONG kb_player;
+void hos_sdl_player_pad(int player, const char *name);   /* pad_sdl.c */
+int hos_sdl_player_wanted(int player, char *out, size_t cap);
+int hos_sdl_pad_info(int i, char *name, size_t cap, int *player);
+static int role_table(int player) { return player < (int)kb_player ? player : player - 1; }   /* (a player but the keyboard's) */
 static volatile LONG sprint_auto;
 /* Sprint and its bindings are read together under input_bind_lock. */
 static volatile LONG sprint_on, sprint_toggle_mode;
@@ -586,6 +597,8 @@ static void binds_default(void) {
         pad_bind[i][0] = i < HOS_SW_N ? pad_default[i] : -1;   /* (the note rows and Sprint: -1, unset) */
         pad_bind[i][1] = -1;
     }
+    for (int p = 0; p < 3; p++)
+        for (int i = 0; i < HOS_SW_N; i++) pad_bind_p[p][i][0] = pad_default[i], pad_bind_p[p][i][1] = -1;
     ReleaseSRWLockExclusive(&pad_bind_lock);
     for (int i = 0; i < HOS_KEY_N; i++)
         for (int k = 0; k < 2; k++) InterlockedExchange(&key_bind[i][k], key_default[i][k]);
@@ -609,7 +622,7 @@ static void binds_load(void) {
     FILE *f = fopen(hos_options_file(), "r");   /* (host/options_path.c) */
     int changed = 0;
     if (f) {
-        char line[80];
+        char line[256];
         int version = 0, had_keys = 0, walk_named = 0;   /* (options_version: 3 since the mouse's buttons are bindings) */
         while (fgets(line, sizeof line, f)) {
             char *eq = strchr(line, '=');
@@ -621,6 +634,27 @@ static void binds_load(void) {
                 const long flags = strtol(eq + 1, NULL, 10);
                 if (flags >= 0 && flags < ((HOS_PAD_N + 1) << HOS_SPRINT_AUTO_LS_SHIFT))
                     InterlockedExchange(&sprint_auto, (LONG)flags);
+            }
+            if (!strcmp(line, "keyboard_player")) {
+                const int v = atoi(eq + 1);
+                InterlockedExchange(&kb_player, v >= 0 && v <= 3 ? v : 0);
+                continue;
+            }
+            if (!strncmp(line, "player_pad", 10) && line[10] >= '1' && line[10] <= '4' && !line[11]) {   /* (the pad that player has, by name) */
+                char *nm = eq + 1;
+                nm[strcspn(nm, "\r\n")] = 0;
+                hos_sdl_player_pad(line[10] - '1', nm);
+                continue;
+            }
+            if (!strncmp(line, "pad", 3) && line[3] >= '2' && line[3] <= '4' && line[4] == '_') {   /* (Wondershot: player 2 to 4) */
+                for (int i = 0; i < HOS_SW_N; i++) {
+                    if (strcmp(line + 5, bind_names[i])) continue;
+                    const char *comma = strchr(eq + 1, ',');
+                    pad_bind_p[line[3] - '2'][i][0] = pad_code(eq + 1);
+                    pad_bind_p[line[3] - '2'][i][1] = comma ? pad_code(comma + 1) : -1;
+                    changed++;
+                }
+                continue;
             }
             const int pad = !strncmp(line, "pad_", 4), keys = !strncmp(line, "key_", 4);
             had_keys |= keys;
@@ -687,6 +721,21 @@ static int sprint_auto_valid(int flags) {
 }
 int hos_binding(int set, int button, int slot) {
     binds_load();
+    if (set == HOS_BIND_KB_PLAYER) return (int)kb_player;
+    if (set == HOS_BIND_PAD_SOURCE) {   /* (player button's pad: its place in the pads' list + 1, 0 Auto) */
+        char want[128], nm[128];
+        if (button < 0 || button > 3 || !hos_sdl_player_wanted(button, want, sizeof want)) return 0;
+        for (int i = 0; hos_sdl_pad_info(i, nm, sizeof nm, NULL); i++)
+            if (!strcmp(nm, want)) return i + 1;
+        return 0;
+    }
+    if (set >= HOS_BIND_PAD_P2 && set <= HOS_BIND_PAD_P4) {   /* (Wondershot) another player's pad */
+        if (button < 0 || button >= HOS_SW_N || slot < 0 || slot > 1) return -1;
+        AcquireSRWLockShared(&pad_bind_lock);
+        const int code = pad_bind_p[set - HOS_BIND_PAD_P2][button][slot];
+        ReleaseSRWLockShared(&pad_bind_lock);
+        return code;
+    }
     if (set == HOS_BIND_SPRINT_AUTO) return sprint_auto_valid((int)sprint_auto);
     if (set == HOS_BIND_SPRINT_ON) return (int)__atomic_load_n(&sprint_on, __ATOMIC_ACQUIRE);
     if (set == HOS_BIND_SPRINT_TOGGLE) return (int)__atomic_load_n(&sprint_toggle_mode, __ATOMIC_ACQUIRE);
@@ -770,8 +819,57 @@ static void bind_one(int set, int button, int slot, int code) {
     hos_input_clear_toggles();
 }
 
+/* (Wondershot) a player's pad binding set, with the same rules as player 1's: an input already bound trades places with the one
+   replaced, and into an empty slot it is taken only from a button that keeps another; button -1: the player's defaults */
+static void bind_player(int pl, int button, int slot, int code) {
+    if (button < 0) {
+        AcquireSRWLockExclusive(&pad_bind_lock);
+        for (int i = 0; i < HOS_SW_N; i++) pad_bind_p[pl][i][0] = pad_default[i], pad_bind_p[pl][i][1] = -1;
+        ReleaseSRWLockExclusive(&pad_bind_lock);
+        return;
+    }
+    if (button >= HOS_SW_N || slot < 0 || slot > 1 || code < -1 || code >= HOS_PAD_N) return;
+    AcquireSRWLockExclusive(&pad_bind_lock);
+    int(*t)[2] = pad_bind_p[pl];
+    const int old = t[button][slot];
+    if (code >= 0 && code != old) {
+        for (int i = 0; i < HOS_SW_N; i++)
+            for (int k = 0; k < 2; k++)
+                if (t[i][k] == code && old < 0 && t[i][1 - k] < 0) {
+                    ReleaseSRWLockExclusive(&pad_bind_lock);
+                    return;
+                }
+        for (int i = 0; i < HOS_SW_N; i++)
+            for (int k = 0; k < 2; k++)
+                if (t[i][k] == code) {
+                    if (old >= 0) t[i][k] = old;
+                    else if (k == 0) t[i][0] = t[i][1], t[i][1] = -1;
+                    else t[i][1] = -1;
+                }
+    }
+    t[button][slot] = code;
+    ReleaseSRWLockExclusive(&pad_bind_lock);
+}
+
 void hos_bind(int set, int button, int slot, int code) {
     binds_load();
+    if (set == HOS_BIND_KB_PLAYER) {
+        InterlockedExchange(&kb_player, code >= 0 && code <= 3 ? code : 0);
+        hos_input_clear_toggles();
+        return;
+    }
+    if (set == HOS_BIND_PAD_SOURCE) {   /* (player button: the code'th pad of the list, 0 Auto) */
+        char nm[128] = "";
+        if (button >= 0 && button <= 3) {
+            if (code > 0) hos_sdl_pad_info(code - 1, nm, sizeof nm, NULL);
+            hos_sdl_player_pad(button, code > 0 ? nm : "");
+        }
+        return;
+    }
+    if (set >= HOS_BIND_PAD_P2 && set <= HOS_BIND_PAD_P4) {
+        bind_player(set - HOS_BIND_PAD_P2, button, slot, code);
+        return;
+    }
     if (set == HOS_BIND_SPRINT_BEGIN) {
         AcquireSRWLockExclusive(&input_bind_lock);
         sprint_layout_update = 1;
@@ -811,7 +909,8 @@ static uint64_t bound_pad_buttons(uint64_t raw) {
 static volatile LONG pad_raw_now;   /* the gamepads' inputs at the last read, 1 << HOS_PAD_* */
 static uint64_t pad_after_menu;     /* (the pads' inputs the Insert menu had, 1 << HOS_PAD_*: each waits until let go) */
 static uint64_t pad_raw_game;       /* (pads_read: the last read's inputs without the menu's Back+Start chord) */
-uint32_t hos_pad_raw(void) { return (uint32_t)pad_raw_now; }
+static volatile LONG pad_raw_menu;   /* (Wondershot) every pad's inputs, whoever's they are: the Insert menu is for all the players */
+uint32_t hos_pad_raw(void) { return (uint32_t)pad_raw_menu; }
 
 /* Apply the Insert menu's Stick dead zone to each stick as a pair, for XInput and SDL.
    Keep both components outside the circle so the filter does not snap toward an axis. */
@@ -822,6 +921,50 @@ void hos_filter_stick(int16_t x, int16_t y, int zone, int32_t out[2]) {
     const int active = a * a + b * b > t * t;   /* both components are clamped, so the sum fits in int32_t */
     out[0] = active ? a : 0;
     out[1] = active ? b : 0;
+}
+
+/* (Wondershot) players 2 to 4: each one's pad, read through its own controls (npad_states). raw: what the Controls page hears
+   while it waits for a new input for that player */
+int hos_sdl_pads_player(int player, uint64_t *buttons, int32_t stick[4]);   /* pad_sdl.c */
+uint32_t hos_pad_raw_player(int player) {   /* (a player's pad's inputs held now, 1 << HOS_PAD_*) */
+    uint64_t raw = 0;
+    int32_t s[4] = {0};
+    return player >= 0 && player < 4 && hos_sdl_pads_player(player, &raw, s) ? (uint32_t)raw : 0;
+}
+static uint64_t bound_pad_buttons_p(int table, uint64_t raw) {
+    uint64_t buttons = 0;
+    AcquireSRWLockShared(&pad_bind_lock);
+    for (int i = 0; i < HOS_SW_N; i++) {
+        const int a = pad_bind_p[table][i][0], alt = pad_bind_p[table][i][1];
+        if ((a >= 0 && (raw >> a & 1)) || (alt >= 0 && (raw >> alt & 1))) buttons |= 1ULL << i;
+    }
+    ReleaseSRWLockShared(&pad_bind_lock);
+    return buttons;
+}
+/* player pl (1 to 3: No.2 to No.4) has a pad: its buttons through its controls, and its sticks; 0 with none */
+static int player_read(int pl, uint64_t *buttons, int32_t stick[4]) {
+    uint64_t raw = 0;
+    int32_t s[4] = {0};
+    if (!hos_sdl_pads_player(pl, &raw, s)) return 0;
+    *buttons = bound_pad_buttons_p(role_table(pl), raw);
+    memcpy(stick, s, sizeof s);
+    return 1;
+}
+static int player_connected(int pl) {
+    uint64_t b = 0;
+    int32_t s[4] = {0};
+    const int on = hos_sdl_pads_player(pl, &b, s);
+    static int was[4];
+    if (on != was[pl]) was[pl] = on, hos_log("hid: player %d: %s", pl + 1, on ? "a controller" : "no controller");
+    return on;
+}
+/* the players with a pad, a bit each */
+uint32_t hos_players(void) {
+    uint64_t b = 0;
+    int32_t s[4] = {0};
+    uint32_t m = 0;
+    for (int p = 0; p < 4; p++) m |= (uint32_t)hos_sdl_pads_player(p, &b, s) << p;
+    return m;
 }
 
 static volatile int xinput_pads_now;   /* (pads_read: the controllers XInput has, while it is polled) */
@@ -844,13 +987,28 @@ static void pads_read(uint64_t *buttons, int32_t stick[4], int *deck_builtin_inp
     }
     next_read = now + 2000000;
     uint64_t raw = 0;   /* (by position: 1 << HOS_PAD_*) */
+    uint64_t menu_raw = 0;   /* (Wondershot: all the pads' inputs, for the Insert menu) */
     int32_t s[4] = {0};
     int sdl_pads = 0;
     int deck_builtin = 0;   /* (the Deck's built-in controls give gameplay input: its mouse must not) */
     {   /* every controller SDL knows (DualSense, DualShock 4, Switch Pro, ...: hos/pad_sdl.c) */
         int hos_sdl_pads(uint64_t *buttons, int32_t stick[4], int *deck_builtin_input);
         static int was;
-        const int n = hos_sdl_pads(&raw, s, &deck_builtin);
+        uint64_t all = 0;
+        int32_t all_s[4] = {0};
+        const int n = hos_sdl_pads(&all, all_s, &deck_builtin);
+        menu_raw = all;
+        /* (Wondershot) player 1 is the first pad alone, the other pads being players 2 to 4; a pad SDL has not numbered yet, or
+           none: the merged pads as before */
+        uint64_t mine = 0;
+        int32_t mine_s[4] = {0};
+        if (hos_sdl_pads_player((int)kb_player, &mine, mine_s)) {
+            raw = mine;
+            memcpy(s, mine_s, sizeof s);
+        } else if (!hos_players()) {   /* (a pad SDL has not numbered yet: as it was) */
+            raw = all;
+            memcpy(s, all_s, sizeof s);
+        }
         if (n != was) hos_log("hid: %d controller%s through SDL", n, n == 1 ? "" : "s");
         was = n;
         sdl_pads = n;
@@ -918,6 +1076,7 @@ static void pads_read(uint64_t *buttons, int32_t stick[4], int *deck_builtin_inp
         }
     }
     InterlockedExchange(&pad_raw_now, (LONG)raw);
+    InterlockedExchange(&pad_raw_menu, (LONG)(menu_raw | raw));
     /* Back and Start together open the Insert menu (gpu/vk/vk_menu.cpp, for pads whose Home button the system
        keeps): they reach the game only one at a time */
     const uint64_t chord = 1ULL << HOS_PAD_BACK | 1ULL << HOS_PAD_START;
@@ -1411,9 +1570,30 @@ static void npad_states(Ctx *c) {
         return;
     }
     uint32_t id = G32(ARG(2));
+    if (id <= 3 && id != (uint32_t)kb_player) {   /* (Wondershot) the players but the keyboard's: their own pads, none of its keyboard, sprint or toggles */
+        uint64_t pb = 0;
+        int32_t ps[4] = {0};
+        static int64_t counter[4];
+        const int on = player_read((int)id, &pb, ps);
+        static const char *env;
+        static int looked;
+        if (!looked) looked = 1, env = getenv("HOS_INPUT_BACKGROUND");
+        if (on && !game_in_front() && !pads_in_background(env, rx_option(4, 0))) pb = 0, memset(ps, 0, sizeof ps);
+        const int64_t t = ++counter[id];
+        for (int i = 0; i < count; i++) {
+            uint64_t e = out + (uint64_t)i * STATE_SIZE;
+            memset(GP(e), 0, STATE_SIZE);
+            G64(e) = (uint64_t)(t - i);
+            G64(e + 8) = pb;
+            memcpy(GP(e + 16), ps, 16);
+            G32(e + 32) = on ? ATTR_CONNECTED : 0;
+        }
+        RET(count);
+        return;
+    }
     uint64_t buttons = 0, taps = 0;
     int32_t stick[4] = {0};
-    int connected = id == NPAD_NO1;
+    int connected = id == (uint32_t)kb_player;   /* (Wondershot: the keyboard's player; player 1 unless the Controls page says) */
     {
         static int64_t last_read;
         static uint32_t seen_ids[16];
@@ -1523,9 +1703,17 @@ HLE(_ZN2nn3hid13GetNpadStatesEPNS0_16NpadJoyDualStateEiRKj) { npad_states(c); }
 HLE(_ZN2nn3hid13GetNpadStatesEPNS0_16NpadJoyLeftStateEiRKj) { npad_states(c); }
 HLE(_ZN2nn3hid13GetNpadStatesEPNS0_17NpadJoyRightStateEiRKj) { npad_states(c); }
 /* GetNpadStyleSet(unsigned int const&) -> BitFlagSet<32, NpadStyleTag> */
-HLE(_ZN2nn3hid15GetNpadStyleSetERKj) { RET(G32(ARG(0)) == NPAD_NO1 ? STYLE_FULLKEY : 0); }
+HLE(_ZN2nn3hid15GetNpadStyleSetERKj) {
+    const uint32_t id = G32(ARG(0));
+    RET(id == NPAD_NO1 || id == (uint32_t)kb_player || (id <= 3 && player_connected((int)id)) ? STYLE_FULLKEY : 0);   /* (Wondershot: player 1 always, the keyboard's player, and a player with a pad) */
+}
 
-HLE(_ZN2nn3hid14InitializeNpadEv) {}
+HLE(_ZN2nn3hid14InitializeNpadEv) {
+    uint64_t b = 0;
+    int32_t s[4] = {0};
+    int hos_sdl_pads(uint64_t *buttons, int32_t stick[4], int *deck_builtin_input);
+    hos_sdl_pads(&b, s, NULL);   /* (Wondershot: SDL started now, so the players' pads are there when the game asks which are) */
+}
 HLE(_ZN2nn3hid18InitializeKeyboardEv) {}
 HLE(_ZN2nn3hid15InitializeMouseEv) {}
 HLE(_ZN2nn3hid14DisconnectNpadERKj) {}
@@ -1552,7 +1740,9 @@ HLE(_ZN2nn3hid23GetSixAxisSensorHandlesEPNS0_19SixAxisSensorHandleEiRKjNS_4util1
     const int asked = (int)ARG(1) < 0 ? 0 : (int)ARG(1) > 16 ? 16 : (int)ARG(1);
     static int logged;
     if (!logged) logged = 1, hos_log("hid: six-axis handles: %d asked for, %d reported", asked, asked < 3 ? 3 : asked);
-    for (int i = 0; i < asked; i++) G32(ARG(0) + 4 * (uint64_t)i) = 0x100u + (uint32_t)i;
+    /* (Wondershot) the handle says whose it is, for GetSixAxisSensorStates: 0x100 + npad id x 16 + the sensor's place */
+    const uint32_t npad = hos_guest_range(ARG(2), 4) ? G32(ARG(2)) & 3u : 0u;
+    for (int i = 0; i < asked; i++) G32(ARG(0) + 4 * (uint64_t)i) = 0x100u + npad * 16u + (uint32_t)i;
     RET(asked < 3 ? 3 : asked);
 }
 /* SixAxisSensorState, 0x60 bytes: {i64 delta time (ns), i64 sampling number, f32 acceleration[3] (G), angular velocity[3]
@@ -1562,28 +1752,34 @@ HLE(_ZN2nn3hid23GetSixAxisSensorHandlesEPNS0_19SixAxisSensorHandleEiRKjNS_4util1
 HLE(_ZN2nn3hid22GetSixAxisSensorStatesEPNS0_18SixAxisSensorStateEiRKNS0_19SixAxisSensorHandleE) {
     /* (the sampling number goes up once per reading, as the hardware's does: while live it is the readings' own count,
        moved on past the last number handed out; each entry is its own reading, with the time since the one before) */
-    static int64_t six_sampling, six_base;
-    static int was_live;
+    static int64_t six_sampling_p[4], six_base_p[4];   /* (Wondershot: each player's own numbering) */
+    static int was_live_p[4];
+    const uint32_t handle = hos_guest_range(ARG(2), 4) ? G32(ARG(2)) : 0x100u;
+    const int pl = handle >= 0x100u ? (int)(((handle - 0x100u) >> 4) & 3u) : (int)kb_player;
+    int64_t *const sixs = &six_sampling_p[pl], *const sixb = &six_base_p[pl];
+    int *const was_live = &was_live_p[pl];
+    static unsigned seen_p;   /* (Wondershot: the first read of each player's sensors, and who made it: does the game use motion at all?) */
+    if (!(seen_p >> pl & 1)) seen_p |= 1u << pl, hos_log("hid: the game reads player %d's six-axis sensor (handle %#x, lr %#llx)", pl + 1, handle, (unsigned long long)c->x[30]);
     const uint64_t out = ARG(0);
     int count = (int)ARG(1) < 1 ? 0 : (int)ARG(1) > HOS_MOTION_HISTORY ? HOS_MOTION_HISTORY : (int)ARG(1);
     if (!hos_guest_range(out, (uint64_t)count * 0x60)) count = 0;   /* (longshot: the states in guest memory, or none) */
     static const float at_rest[18] = {0, 0, -1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1};
-    int hos_sdl_motion_history(HosMotionSample *out, int max);   /* pad_sdl.c */
+    int hos_sdl_motion_history(int player, HosMotionSample *out, int max);   /* pad_sdl.c */
     HosMotionSample h[HOS_MOTION_HISTORY];
     static const char *background_env;
     static int background_looked;
     if (!background_looked) background_looked = 1, background_env = getenv("HOS_INPUT_BACKGROUND");
     const int counts = motion_counts(game_in_front(), background_env, rx_option(4, 0));
-    const int live = count && counts ? hos_sdl_motion_history(h, count) : 0;
+    const int live = count && counts ? hos_sdl_motion_history(pl, h, count) : 0;
     /* (each switch between live and at rest moves the numbers a whole history past the last ones given out, so no entry
        of one ever has a number an entry of the other had) */
     if (live) {
-        if (!was_live || six_base + h[0].n < six_sampling) six_base = six_sampling + HOS_MOTION_HISTORY - h[0].n;
-        six_sampling = six_base + h[0].n;
+        if (!(*was_live) || (*sixb) + h[0].n < (*sixs)) (*sixb) = (*sixs) + HOS_MOTION_HISTORY - h[0].n;
+        (*sixs) = (*sixb) + h[0].n;
     } else {
-        six_sampling += was_live ? HOS_MOTION_HISTORY : 1;
+        (*sixs) += (*was_live) ? HOS_MOTION_HISTORY : 1;
     }
-    was_live = live > 0;
+    (*was_live) = live > 0;
     const int n = live ? live : count;
     for (int i = 0; i < n; i++) {
         const uint64_t e = out + (uint64_t)i * 0x60;
@@ -1593,11 +1789,11 @@ HLE(_ZN2nn3hid22GetSixAxisSensorStatesEPNS0_18SixAxisSensorStateEiRKNS0_19SixAxi
             const HosMotionState *m = &h[i].st;
             memcpy(v, m->accel, 12), memcpy(v + 3, m->gyro, 12), memcpy(v + 6, m->rotation, 12), memcpy(v + 9, m->direction, 36);
             G64(e) = (uint64_t)(h[i].dt_ns > 0 ? h[i].dt_ns : 5000000);
-            G64(e + 8) = (uint64_t)(six_base + h[i].n);
+            G64(e + 8) = (uint64_t)((*sixb) + h[i].n);
         } else {
             memcpy(v, at_rest, sizeof v);
             G64(e) = 5000000;
-            G64(e + 8) = (uint64_t)(six_sampling - i);
+            G64(e + 8) = (uint64_t)((*sixs) - i);
         }
         memcpy(GP(e + 0x10), v, sizeof v);
         G32(e + 0x58) = 1;

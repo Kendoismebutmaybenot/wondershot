@@ -66,6 +66,7 @@ static struct {
     uint16_t vendor;      /* (longshot) its USB vendor and product, and its Steam Input handle: not 0 for a Steam stand-in pad */
     uint16_t product;     /* (longshot) its USB product id (host/vibration.h: a Steam Controller (2026); the Deck's built-in controls, host/steam_pads.h) */
     uint64_t steam;
+    int8_t player;        /* (Wondershot) its player, 0..3, the lowest free while it is open; -1 none (a motion-only pad) */
     int motion_only;      /* (host/steam_pads.h) a real Valve pad while a Steam stand-in pad is open: motion, no input */
 } pads[MAX_PADS];
 static uint32_t pads_opened;
@@ -73,6 +74,9 @@ static SRWLOCK state_lock = SRWLOCK_INIT;
 static uint64_t state_buttons;
 static int32_t state_stick[4];
 static int state_count;
+static uint64_t state_pl_buttons[4];   /* (Wondershot) each player's pad: buttons (1 << HOS_PAD_*), sticks, whether there is one */
+static int32_t state_pl_stick[4][4];
+static int state_pl_on[4];
 static int state_deck_builtin;   /* (longshot) the Deck's built-in controls gave gameplay input in that poll */
 static char state_name[128];   /* the first controller's name (host/prompts.c: the button prompts' Auto) */
 static int state_type, state_sdl;   /* and its SDL type (the loaded SDL's numbers, 0 unknown), and that SDL (3, 2; 0 none) */
@@ -87,13 +91,20 @@ static SRWLOCK hd_lock = SRWLOCK_INIT;
 static float hd_values[2][4] = {{0.0f, 160.0f, 0.0f, 320.0f}, {0.0f, 160.0f, 0.0f, 320.0f}};
 /* (motion) the pad read and its filter (the polling thread's own), then what the game is handed (under state_lock): the
    last HOS_MOTION_HISTORY readings, newest at motion_hist[motion_head]; gyro_status for the menu */
-static HosMotion motion;
-static int64_t motion_ns, motion_reading_ns, motion_log_ns, motion_readings, motion_start_ns;
-static int motion_warned;
-static int motion_pad = -1;
-static uint32_t motion_serial;
-static HosMotionSample motion_hist[HOS_MOTION_HISTORY];
-static int motion_head, motion_count, motion_live;
+/* (Wondershot) one of these for each player: the pad that is player p's gives player p's sensors, as the game asks for them by its
+   npad (host/nn_hid.c: the handle says which) */
+typedef struct {
+    HosMotion motion;
+    int64_t ns, reading_ns, log_ns, readings, start_ns;
+    int warned;
+    int pad;   /* (the pad read into the filter, -1 none) */
+    uint32_t serial;
+    HosMotionSample hist[HOS_MOTION_HISTORY];
+    int head, count, live;
+    float last_a[3], last_g[3];
+    int64_t same_since, rearm_ns;
+} MotionSlot;
+static MotionSlot mot[4];
 static volatile LONG gyro_status;   /* 0 no controller, 1 controllers but none with a gyro, 2 one with a gyro */
 
 void hos_filter_stick(int16_t x, int16_t y, int zone, int32_t out[2]);   /* nn_hid.c */
@@ -204,12 +215,13 @@ static int hd_poll(int i, const uint8_t side[3][4], long long now) {
 
 /* (motion) the sensors on while Motion controls is on (HOS_OPT_GYRO, on without the menu), off otherwise; the pad with
    them that was used last read into the filter. count: the pads open */
+static void motion_player(int64_t now, int player, int want, int debug);
 static void motion_poll(int64_t now, int count) {
     int rx_option(int id, int otherwise);
     static int debug = -1;   /* (HOS_MOTION_DEBUG, read once) */
     if (debug < 0) debug = env_on("HOS_MOTION_DEBUG");
     const int want = rx_option(HOS_OPT_GYRO, 1) != 0;
-    int pick = -1, any = 0;
+    int any = 0;
     for (int i = 0; i < MAX_PADS; i++) {
         if (!pads[i].gc || !pads[i].motion) continue;
         any = 1;
@@ -230,9 +242,28 @@ static void motion_poll(int64_t now, int count) {
                 pads[i].motion_retry_ns = 0;
             }
         }
-        if (want && pads[i].motion_on && (pick < 0 || pads[i].used_ns > pads[pick].used_ns)) pick = i;
     }
     InterlockedExchange(&gyro_status, any ? 2 : count ? 1 : 0);
+    for (int pl = 0; pl < 4; pl++) motion_player(now, pl, want, debug);
+}
+
+/* the sensors of player `player`: the pad that is theirs, read into their own filter. A real Valve pad beside its Steam stand-in
+   (motion only: no buttons, no player) belongs to the stand-in's player */
+static void motion_player(int64_t now, int player, int want, int debug) {
+    MotionSlot *m = &mot[player];
+    static int init;
+    if (!init) {
+        init = 1;
+        for (int k = 0; k < 4; k++) mot[k].pad = -1;
+    }
+    int pick = -1, stand_in_player = 0;
+    for (int i = 0; i < MAX_PADS; i++)
+        if (pads[i].gc && pads[i].steam && !pads[i].motion_only && pads[i].player >= 0) stand_in_player = pads[i].player;
+    for (int i = 0; i < MAX_PADS; i++) {
+        if (!pads[i].gc || !pads[i].motion || !pads[i].motion_on || !want) continue;
+        const int owner = pads[i].motion_only ? stand_in_player : pads[i].player;
+        if (owner == player) pick = i;
+    }
     float a[3], g[3];
     const int read = pick >= 0 && hos_sdl_pad_sensor(pads[pick].gc, HOS_SDL_SENSOR_ACCEL, a, 3) &&
                      hos_sdl_pad_sensor(pads[pick].gc, HOS_SDL_SENSOR_GYRO, g, 3);
@@ -241,86 +272,84 @@ static void motion_poll(int64_t now, int count) {
        does. Seen with a Steam Controller under Steam after Alt+Tab, when Steam's layout switch left its sensors off while
        SDL still had them on. Off and on again, as the menu's Motion controls row does, brings it back) */
     {
-        static float last_a[3], last_g[3];
-        static int64_t same_since, rearm_ns;
-        if (read && !memcmp(g, last_g, sizeof g) && !memcmp(a, last_a, sizeof a)) {
-            if (!same_since) same_since = now;
-            else if (now - same_since > 1200000000LL && now >= rearm_ns) {
+        if (read && !memcmp(g, m->last_g, sizeof g) && !memcmp(a, m->last_a, sizeof a)) {
+            if (!m->same_since) m->same_since = now;
+            else if (now - m->same_since > 1200000000LL && now >= m->rearm_ns) {
                 hos_sdl_pad_sensor_enable(pads[pick].gc, HOS_SDL_SENSOR_ACCEL, 0);
                 hos_sdl_pad_sensor_enable(pads[pick].gc, HOS_SDL_SENSOR_GYRO, 0);
                 pads[pick].motion_on = 0;   /* (turned on again by the loop above on the next poll) */
                 hos_log("hid: \"%s\": its gyroscope and accelerometer stopped changing: motion sensors turned off "
                         "and on again", hos_sdl_pad_name(pads[pick].gc));
-                same_since = 0, rearm_ns = now + 3000000000LL;
+                m->same_since = 0, m->rearm_ns = now + 3000000000LL;
             }
         } else {
-            if (read) memcpy(last_a, a, sizeof a), memcpy(last_g, g, sizeof g);
-            same_since = 0;
+            if (read) memcpy(m->last_a, a, sizeof a), memcpy(m->last_g, g, sizeof g);
+            m->same_since = 0;
         }
     }
     /* (the pad that had motion keeps what its filter learned of its gyroscope's bias, for when it has motion again) */
-    if (motion_pad >= 0 && (!read || pick != motion_pad) && pads[motion_pad].gc && pads[motion_pad].serial == motion_serial &&
-        motion.learned_t > 0) {
-        memcpy(pads[motion_pad].bias, motion.bias, sizeof motion.bias);
-        pads[motion_pad].bias_t = motion.learned_t, pads[motion_pad].has_bias = 1;
+    if (m->pad >= 0 && (!read || pick != m->pad) && pads[m->pad].gc && pads[m->pad].serial == m->serial &&
+        m->motion.learned_t > 0) {
+        memcpy(pads[m->pad].bias, m->motion.bias, sizeof m->motion.bias);
+        pads[m->pad].bias_t = m->motion.learned_t, pads[m->pad].has_bias = 1;
     }
     if (!read) {
-        motion_pad = -1;
+        m->pad = -1;
         AcquireSRWLockExclusive(&state_lock);
-        motion_live = 0, motion_count = 0;
+        m->live = 0, m->count = 0;
         ReleaseSRWLockExclusive(&state_lock);
         return;
     }
     int fresh = 0;
-    if (pick != motion_pad || pads[pick].serial != motion_serial) {   /* (another pad, or one reconnected: a fresh filter) */
-        hos_motion_reset(&motion);
+    if (pick != m->pad || pads[pick].serial != m->serial) {   /* (another pad, or one reconnected: a fresh filter) */
+        hos_motion_reset(&m->motion);
         if (pads[pick].has_bias)
-            memcpy(motion.bias, pads[pick].bias, sizeof motion.bias), motion.learned_t = pads[pick].bias_t;
-        motion_pad = pick, motion_serial = pads[pick].serial, motion_ns = now;
+            memcpy(m->motion.bias, pads[pick].bias, sizeof m->motion.bias), m->motion.learned_t = pads[pick].bias_t;
+        m->pad = pick, m->serial = pads[pick].serial, m->ns = now;
         fresh = 1;
-        motion_start_ns = now, motion_warned = 0;
-        hos_log("hid: motion controls from \"%s\"", hos_sdl_pad_name(pads[pick].gc));
+        m->start_ns = now, m->warned = 0;
+        hos_log("hid: player %d's motion controls from \"%s\"", player + 1, hos_sdl_pad_name(pads[pick].gc));
     }
     /* the filter runs outside the lock (the game's input calls take it); a repeat of the last reading is no reading */
-    const int64_t dt_ns = now - motion_ns;
-    motion_ns = now;
+    const int64_t dt_ns = now - m->ns;
+    m->ns = now;
     {   /* (the Motion deadzone row: the console's tight, standard and loose zero-drift thresholds, turns a second) */
         static const float zone[3] = {HOS_MOTION_THRESHOLD_TIGHT, HOS_MOTION_THRESHOLD, HOS_MOTION_THRESHOLD_LOOSE};
         const int z = rx_option(HOS_OPT_GYRO_DEADZONE, 1);
-        motion.threshold = zone[z < 0 ? 0 : z > 2 ? 2 : z];
+        m->motion.threshold = zone[z < 0 ? 0 : z > 2 ? 2 : z];
     }
-    if (!hos_motion_update(&motion, a, g, (float)(dt_ns / 1e9), rx_option(HOS_OPT_GYRO_SENS_X, 100) / 100.0f,
+    if (!hos_motion_update(&m->motion, a, g, (float)(dt_ns / 1e9), rx_option(HOS_OPT_GYRO_SENS_X, 100) / 100.0f,
                            rx_option(HOS_OPT_GYRO_SENS_Y, 100) / 100.0f, rx_option(HOS_OPT_GYRO_INV_X, 0),
                            rx_option(HOS_OPT_GYRO_INV_Y, 0)) && !fresh)
         return;
-    if (!motion_warned && motion.learned_t <= 0 && now - motion_start_ns > 30000000000LL) {
-        motion_warned = 1;   /* (a pad noisier than the stillness test allows: its drift is never taken off) */
+    if (!m->warned && m->motion.learned_t <= 0 && now - m->start_ns > 30000000000LL) {
+        m->warned = 1;   /* (a pad noisier than the stillness test allows: its drift is never taken off) */
         hos_log("hid: motion: \"%s\" has not been set down yet, so its gyroscope's drift is not learned: set it on a "
                 "table for a second (if it is on a table and this stays, its sensor may be noisier than the stillness "
                 "test allows)", hos_sdl_pad_name(pads[pick].gc));
     }
-    if (debug && now >= motion_log_ns) {   /* (twice a second: what the game gets) */
-        motion_log_ns = now + 500000000LL;
+    if (debug && now >= m->log_ns) {   /* (twice a second: what the game gets) */
+        m->log_ns = now + 500000000LL;
         hos_log("hid: motion: accel (%+.2f, %+.2f, %+.2f) G, gyro (%+.3f, %+.3f, %+.3f) turns/s, direction rows "
-                "(%+.2f %+.2f %+.2f / %+.2f %+.2f %+.2f / %+.2f %+.2f %+.2f), bias (%+.4f, %+.4f, %+.4f)", motion.out.accel[0],
-                motion.out.accel[1], motion.out.accel[2], motion.out.gyro[0], motion.out.gyro[1], motion.out.gyro[2],
-                motion.out.direction[0], motion.out.direction[1], motion.out.direction[2], motion.out.direction[3],
-                motion.out.direction[4], motion.out.direction[5], motion.out.direction[6], motion.out.direction[7],
-                motion.out.direction[8], motion.bias[0], motion.bias[1], motion.bias[2]);
+                "(%+.2f %+.2f %+.2f / %+.2f %+.2f %+.2f / %+.2f %+.2f %+.2f), bias (%+.4f, %+.4f, %+.4f)", m->motion.out.accel[0],
+                m->motion.out.accel[1], m->motion.out.accel[2], m->motion.out.gyro[0], m->motion.out.gyro[1], m->motion.out.gyro[2],
+                m->motion.out.direction[0], m->motion.out.direction[1], m->motion.out.direction[2], m->motion.out.direction[3],
+                m->motion.out.direction[4], m->motion.out.direction[5], m->motion.out.direction[6], m->motion.out.direction[7],
+                m->motion.out.direction[8], m->motion.bias[0], m->motion.bias[1], m->motion.bias[2]);
     }
     HosMotionSample r;
-    r.st = motion.out;
-    r.n = ++motion_readings;
+    r.st = m->motion.out;
+    r.n = ++m->readings;
     /* (the time since the reading before, capped as the filter caps it: a stalled pad's next reading is no jump) */
-    r.dt_ns = fresh ? 5000000 : now - motion_reading_ns;
+    r.dt_ns = fresh ? 5000000 : now - m->reading_ns;
     if (r.dt_ns > (int64_t)(HOS_MOTION_DT_MAX * 1e9)) r.dt_ns = (int64_t)(HOS_MOTION_DT_MAX * 1e9);
-    motion_reading_ns = now;
+    m->reading_ns = now;
     AcquireSRWLockExclusive(&state_lock);
-    motion_head = (motion_head + 1) % HOS_MOTION_HISTORY;
-    motion_hist[motion_head] = r;
-    if (fresh) motion_count = 0;
-    if (motion_count < HOS_MOTION_HISTORY) motion_count++;
-    motion_live = 1;
+    m->head = (m->head + 1) % HOS_MOTION_HISTORY;
+    m->hist[m->head] = r;
+    if (fresh) m->count = 0;
+    if (m->count < HOS_MOTION_HISTORY) m->count++;
+    m->live = 1;
     ReleaseSRWLockExclusive(&state_lock);
 }
 
@@ -444,6 +473,91 @@ static void four_poll(int i, int64_t now) {
 }
 
 /* one poll: controllers plugged in or gone (each second), then every open one's buttons, sticks and rumble */
+/* (Wondershot) which pad is which player. A player can be given a pad by name (the Controls page's Controller row: kept in
+   longshot_options.ini as player_pad<N>=<name>); a player without one is Auto: the pads nobody asked for take the lowest players
+   no name holds, in the order they connected, and keep their number while they are open */
+static SRWLOCK want_lock = SRWLOCK_INIT;
+static char want_name[4][128];
+void hos_sdl_player_pad(int player, const char *name) {
+    if (player < 0 || player > 3) return;
+    AcquireSRWLockExclusive(&want_lock);
+    snprintf(want_name[player], sizeof want_name[player], "%s", name ? name : "");
+    ReleaseSRWLockExclusive(&want_lock);
+}
+int hos_sdl_player_wanted(int player, char *out, size_t cap) {
+    if (player < 0 || player > 3 || !cap) return 0;
+    AcquireSRWLockShared(&want_lock);
+    snprintf(out, cap, "%s", want_name[player]);
+    ReleaseSRWLockShared(&want_lock);
+    return out[0] != 0;
+}
+/* the pads in the order they connected (serial): i-th of them, its name and player (-1 none yet); 0 past the last */
+int hos_sdl_pad_info(int i, char *name, size_t cap, int *player) {
+    AcquireSRWLockShared(&state_lock);
+    int order[MAX_PADS], n = 0;
+    for (int k = 0; k < MAX_PADS; k++)
+        if (pads[k].gc && !pads[k].motion_only) order[n++] = k;
+    for (int a = 1; a < n; a++)   /* (insertion sort by serial) */
+        for (int b = a; b > 0 && pads[order[b]].serial < pads[order[b - 1]].serial; b--) {
+            const int t = order[b]; order[b] = order[b - 1]; order[b - 1] = t;
+        }
+    int ok = 0;
+    if (i >= 0 && i < n) {
+        const char *nm = hos_sdl_pad_name(pads[order[i]].gc);
+        snprintf(name, cap, "%s", nm ? nm : "");
+        if (player) *player = pads[order[i]].player;
+        ok = 1;
+    }
+    ReleaseSRWLockShared(&state_lock);
+    return ok;
+}
+static void assign_players(void) {
+    int order[MAX_PADS], n = 0;
+    for (int k = 0; k < MAX_PADS; k++)
+        if (pads[k].gc && !pads[k].motion_only) order[n++] = k;
+        else pads[k].player = -1;
+    for (int a = 1; a < n; a++)
+        for (int b = a; b > 0 && pads[order[b]].serial < pads[order[b - 1]].serial; b--) {
+            const int t = order[b]; order[b] = order[b - 1]; order[b - 1] = t;
+        }
+    int was[MAX_PADS], taken = 0, named = 0;
+    for (int k = 0; k < MAX_PADS; k++) was[k] = pads[k].player, pads[k].player = -1;
+    char want[4][128];
+    AcquireSRWLockShared(&want_lock);
+    memcpy(want, want_name, sizeof want);
+    ReleaseSRWLockShared(&want_lock);
+    for (int p = 0; p < 4; p++) {   /* (a player a name holds: the pad of that name that was already it, else the first) */
+        if (!want[p][0]) continue;
+        named |= 1 << p;
+        int pick = -1;
+        for (int j = 0; j < n && pick < 0; j++) {
+            const int k = order[j];
+            const char *nm = hos_sdl_pad_name(pads[k].gc);
+            if (pads[k].player < 0 && nm && !strcmp(nm, want[p]) && was[k] == p) pick = k;
+        }
+        for (int j = 0; j < n && pick < 0; j++) {
+            const int k = order[j];
+            const char *nm = hos_sdl_pad_name(pads[k].gc);
+            if (pads[k].player < 0 && nm && !strcmp(nm, want[p])) pick = k;
+        }
+        if (pick >= 0) pads[pick].player = (int8_t)p, taken |= 1 << p;
+    }
+    for (int j = 0; j < n; j++) {   /* (the rest keep their number when nothing holds it, else take the lowest free) */
+        const int k = order[j];
+        if (pads[k].player >= 0) continue;
+        if (was[k] >= 0 && !((taken | named) >> was[k] & 1)) pads[k].player = (int8_t)was[k], taken |= 1 << was[k];
+    }
+    for (int j = 0; j < n; j++) {
+        const int k = order[j];
+        if (pads[k].player >= 0) continue;
+        for (int p = 0; p < 4; p++)
+            if (!((taken | named) >> p & 1)) { pads[k].player = (int8_t)p; taken |= 1 << p; break; }
+    }
+    for (int k = 0; k < MAX_PADS; k++)
+        if (pads[k].gc && pads[k].player != was[k] && pads[k].player >= 0)
+            hos_log("hid: \"%s\" is player %d", hos_sdl_pad_name(pads[k].gc), pads[k].player + 1);
+}
+
 static void pads_poll(void) {
     static int64_t next_scan = 0;
     if (vib_force < 0) vib_force = vibration_force(getenv("HOS_RUMBLE_BACKEND"));
@@ -457,6 +571,7 @@ static void pads_poll(void) {
                     vib_leave(i, now);   /* (longshot) what played its vibration lets go of it first */
                     hos_sdl_pad_close(pads[i].gc);
                     pads[i].gc = NULL;
+                    pads[i].player = -1;
                     pads[i].rumble_lo = pads[i].rumble_hi = 0;
                     pads[i].rumble_ns = 0;
                     pads[i].motion = pads[i].motion_on = 0;
@@ -497,9 +612,11 @@ static void pads_poll(void) {
                 pads[slot].product = hos_sdl_pad_product(gc);
                 pads[slot].steam = hos_sdl_pad_steam_handle(gc);
                 pads[slot].motion_only = 0;   /* (the poll below decides, and says so) */
+                pads[slot].player = -1;   /* (given below, once it is known not to be motion-only) */
                 hos_sdl_pad_log_connection(gc, pads[slot].motion, pads[slot].steam != 0);
             }
         }
+        assign_players();
         uint64_t b = 0;
         int32_t s[4] = {0};
         int count = 0;
@@ -535,6 +652,9 @@ static void pads_poll(void) {
         int64_t status_used = -1;   /* (longshot) the Controls page's vibration line: the pad used last */
         int status_pad = -1;
         int deck_builtin = 0;   /* (longshot) the Deck's built-in controls give gameplay input: its mouse must not */
+        uint64_t pl_buttons[4] = {0};   /* (Wondershot) each player's own pad, beside the merged state */
+        int32_t pl_stick[4][4] = {{0}};
+        int pl_on[4] = {0};
         for (int i = 0; i < MAX_PADS; i++) stand_in |= pads[i].gc && pads[i].steam;
         for (int i = 0; i < MAX_PADS; i++) {
             void *gc = pads[i].gc;
@@ -569,12 +689,13 @@ static void pads_poll(void) {
             /* The paddle buttons follow MISC1 in SDL, and the triggers in HOS_PAD_*. */
             for (int k = BTN_RPADDLE1; k <= BTN_LPADDLE2; k++)
                 if (hos_sdl_pad_button(gc, k)) sig |= 1ULL << (HOS_PAD_RPADDLE1 + k - BTN_RPADDLE1);
-            b |= sig;
+            uint64_t mine = sig;   /* (this pad's buttons: into the merged state and its player's) */
             /* (longshot) a DualShock 4's or DualSense's touchpad click: it opens the Insert menu as F1 does (vk_menu.cpp).
                SDL numbers it 20, past the buttons above; an SDL without it answers 0 */
-            if (hos_sdl_pad_button(gc, BTN_TOUCHPAD)) b |= 1ULL << HOS_PAD_TOUCHPAD;
-            if (hos_sdl_pad_axis(gc, AX_LT) > 8000) b |= 1ULL << HOS_PAD_LTRIGGER;
-            if (hos_sdl_pad_axis(gc, AX_RT) > 8000) b |= 1ULL << HOS_PAD_RTRIGGER;
+            if (hos_sdl_pad_button(gc, BTN_TOUCHPAD)) mine |= 1ULL << HOS_PAD_TOUCHPAD;
+            if (hos_sdl_pad_axis(gc, AX_LT) > 8000) mine |= 1ULL << HOS_PAD_LTRIGGER;
+            if (hos_sdl_pad_axis(gc, AX_RT) > 8000) mine |= 1ULL << HOS_PAD_RTRIGGER;
+            b |= mine;
             const int inv_x = rx_option(16, 0);
             const int inv_y = rx_option(17, 0);
             const int z = rx_option(11, 0);   /* (the menu's Stick dead zone) */
@@ -608,6 +729,11 @@ static void pads_poll(void) {
             if (inv_y) v[3] = -v[3];
             for (int k = 0; k < 4; k++)
                 if ((v[k] < 0 ? -v[k] : v[k]) > (s[k] < 0 ? -s[k] : s[k])) s[k] = v[k];
+            if (pads[i].player >= 0) {
+                pl_on[pads[i].player] = 1;
+                pl_buttons[pads[i].player] = mine;
+                memcpy(pl_stick[pads[i].player], v, sizeof v);
+            }
             {   /* (motion: the pad last used; a stick counts by which way it is pushed, not by how far) */
                 for (int k = 0; k < 4; k++) sig |= (uint64_t)(v[k] > 0 ? 1 : v[k] < 0 ? 2 : 0) << (32 + 2 * k);
                 if (sig != pads[i].input_sig) pads[i].input_sig = sig, pads[i].used_ns = now;
@@ -654,6 +780,9 @@ static void pads_poll(void) {
         motion_poll(now, count);
         AcquireSRWLockExclusive(&state_lock);
         state_buttons = b;
+        memcpy(state_pl_buttons, pl_buttons, sizeof pl_buttons);
+        memcpy(state_pl_stick, pl_stick, sizeof pl_stick);
+        memcpy(state_pl_on, pl_on, sizeof pl_on);
         memcpy(state_stick, s, sizeof s);
         state_count = count;
         state_deck_builtin = deck_builtin;
@@ -735,12 +864,30 @@ int hos_sdl_pads(uint64_t *buttons, int32_t stick[4], int *deck_builtin_input) {
     return n;
 }
 
+/* (Wondershot) one player's own pad (0..3: the first pad opened is player 1, the next player 2, a pad that goes away frees its
+   number), not merged with the others': 1 with a pad there. nn_hid.c: each player's npad. Needs hos_sdl_pads to have started SDL */
+int hos_sdl_pads_player(int player, uint64_t *buttons, int32_t stick[4]) {
+    if (player < 0 || player > 3) return 0;
+    AcquireSRWLockShared(&state_lock);
+    const int on = state_pl_on[player];
+    if (on) {
+        *buttons |= state_pl_buttons[player];
+        for (int k = 0; k < 4; k++)
+            if ((state_pl_stick[player][k] < 0 ? -state_pl_stick[player][k] : state_pl_stick[player][k]) >
+                (stick[k] < 0 ? -stick[k] : stick[k])) stick[k] = state_pl_stick[player][k];
+    }
+    ReleaseSRWLockShared(&state_lock);
+    return on;
+}
+
 /* (motion) the latest readings for nn_hid.c's GetSixAxisSensorStates, newest first: up to max, how many there are; 0
    when there are none (Motion controls off, or no pad with a gyroscope) */
-int hos_sdl_motion_history(HosMotionSample *out, int max) {
+int hos_sdl_motion_history(int player, HosMotionSample *out, int max) {
+    if (player < 0 || player > 3) return 0;
+    const MotionSlot *m = &mot[player];
     AcquireSRWLockShared(&state_lock);
-    const int n = !motion_live ? 0 : motion_count < max ? motion_count : max;
-    for (int i = 0; i < n; i++) out[i] = motion_hist[(motion_head - i + HOS_MOTION_HISTORY) % HOS_MOTION_HISTORY];
+    const int n = !m->live ? 0 : m->count < max ? m->count : max;
+    for (int i = 0; i < n; i++) out[i] = m->hist[(m->head - i + HOS_MOTION_HISTORY) % HOS_MOTION_HISTORY];
     ReleaseSRWLockShared(&state_lock);
     return n;
 }

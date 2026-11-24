@@ -14,7 +14,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 41   /* (40: HOS_BIND_SPRINT_TOGGLE; 41: live output preview) */
+#define MKWVK_API_VERSION 43   /* (40: HOS_BIND_SPRINT_TOGGLE; 41: live output preview; 42: players 2 to 4's pads) */
 
 enum { OUTPUT_TRIAL_EXPIRED, OUTPUT_TRIAL_PREPARING, OUTPUT_TRIAL_READY, OUTPUT_TRIAL_ACTIVE, OUTPUT_TRIAL_SHOWN };
 enum { HOS_MONITOR_CURRENT = 1, HOS_MONITOR_PRIMARY = 2 };
@@ -140,7 +140,14 @@ enum { HOS_PAD_TOUCHPAD = 31 };
    HOS_BIND_SPRINT_BEGIN starts a layout update, finished by HOS_BIND_SPRINT_ON setting Sprint to 1 or 0.
    HOS_BIND_SPRINT_TOGGLE publishes the Controls page's toggle mode. Input reads these values and bindings together
    (button and slot unused). */
-enum { HOS_BIND_PAD, HOS_BIND_KEY, HOS_BIND_SPRINT_AUTO, HOS_BIND_SPRINT_ON, HOS_BIND_SPRINT_BEGIN, HOS_BIND_SPRINT_TOGGLE };
+enum { HOS_BIND_PAD, HOS_BIND_KEY, HOS_BIND_SPRINT_AUTO, HOS_BIND_SPRINT_ON, HOS_BIND_SPRINT_BEGIN, HOS_BIND_SPRINT_TOGGLE,
+       /* (Wondershot, version 42) players 2 to 4's pad controls: binding/bind with the Switch's buttons only, slots 0 and 1;
+          bind with button -1: that player's defaults */
+       HOS_BIND_PAD_P2 = 8, HOS_BIND_PAD_P3, HOS_BIND_PAD_P4,
+       /* (version 43) HOS_BIND_KB_PLAYER: binding gives, bind sets (code 0 to 3) the player the keyboard, the mouse and the full
+          controls belong to; the pad sets above are then the other players', in player order without it. HOS_BIND_PAD_SOURCE:
+          button = player, binding gives (bind sets, with code) which pad it has: its place + 1 in pad_info's list, 0 Auto */
+       HOS_BIND_KB_PLAYER = 11, HOS_BIND_PAD_SOURCE };
 enum { HOS_SPRINT_AUTO_KEY = 1, HOS_SPRINT_AUTO_B = 2, HOS_SPRINT_AUTO_PAD = 4, HOS_SPRINT_AUTO_LS_SHIFT = 3 };
 /* (longshot) the controller faces of the button prompts (host/prompts.c): the Switch, then nx2/prompt_faces.py FACES' order,
    then the keyboard's (nx2/prompt_keys.py: the keys bound, not the pad inputs); the Button prompts row's value is one more (0
@@ -369,6 +376,14 @@ typedef struct MkwVkHost {
     int (*ab_value)(const char *name, int normal);
     /* Version 41: request a live output preview. */
     int (*output_preview_request)(uint32_t width, uint32_t height);
+    /* Version 42 (Wondershot): the gamepad inputs held now (1 << HOS_PAD_*) by player 1 to 4's own pad (0: pad_raw's), for the
+       Controls page while it waits for a new input for that player; and the players with a pad, a bit each (1 << player) */
+    uint32_t (*pad_raw_player)(int player);
+    uint32_t (*players)(void);
+    /* Version 43 (Wondershot): the pads in the order they connected: the i-th one's name and player (0 to 3, -1 none yet); 0 past
+       the last. pad_wanted: the pad player has been given by name, 0 for Auto */
+    int (*pad_info)(int i, char *name, size_t cap, int *player);
+    int (*pad_wanted)(int player, char *name, size_t cap);
 } MkwVkHost;
 /* (version 35) a cheat's kind: a heading (no opcodes), a data cheat (switched), a master cheat (always on), not supported (note) */
 enum { MKWVK_CHEAT_HEADING, MKWVK_CHEAT_DATA, MKWVK_CHEAT_MASTER, MKWVK_CHEAT_UNSUPPORTED };

@@ -76,6 +76,10 @@ const char *hos_nfc_dir(void);
 int hos_nfc_scan(int start);
 const char *hos_nfc_scan_name(void);
 void hos_bind(int set, int button, int slot, int code);
+uint32_t hos_pad_raw_player(int player);   /* nn_hid.c (Wondershot) */
+uint32_t hos_players(void);   /* nn_hid.c (Wondershot) */
+int hos_sdl_pad_info(int i, char *name, size_t cap, int *player);   /* pad_sdl.c */
+int hos_sdl_player_wanted(int player, char *out, size_t cap);
 int hos_prompts_face(void);         /* prompts.c */
 int hos_prompts_live_parts(void);   /* prompts.c */
 const char *hos_perf_info(char *map, int cap, int64_t movie[5], float pose[5], int *has_pose);   /* hos_main.c */
@@ -476,6 +480,8 @@ static const MkwVkHost vk_host = {
     hos_mod_info, hos_mod_edit, hos_mods_changed, hos_cheat_info, hos_cheat_set,
     host_ab_value,  /* (version 36, longshot: a renderer switch's A/B value, host/hos_ab.c) */
     nvn_output_preview_request,
+    hos_pad_raw_player, hos_players,   /* (version 42, Wondershot) */
+    hos_sdl_pad_info, hos_sdl_player_wanted,   /* (version 43) */
 };
 
 static const MkwVkRenderer *vk;   /* the Vulkan back end, when it was chosen and started */
