@@ -274,13 +274,20 @@ void linearize(ImDrawData* dd) {
 ImU32 hdr10_of(ImU32 c, float white) {
     static float lin[256];
     static unsigned char pq[4097];
-    static float pq_white = -1;
-    if (pq_white != white) {
-        pq_white = white;
+    static float pq_white = -1, pq_gamma = -1;
+    // (Wondershot) the SDR EOTF row on the overlays too, as SW1's F1 menu had it (drawn there before its HDR pass): Gamma 2.2 /
+    // 2.4 show the sRGB colour as that display would (its code to the power), None the sRGB curve
+    static const float kGamma[3] = {0.0f, 2.2f, 2.4f};
+    const float gamma = kGamma[std::clamp(opts.hdr_sdr_gamma, 0, 2)];
+    if (pq_gamma != gamma) {
+        pq_gamma = gamma;
         for (int i = 0; i < 256; i++) {
             const float v = i / 255.0f;
-            lin[i] = v <= 0.04045f ? v / 12.92f : std::pow((v + 0.055f) / 1.055f, 2.4f);
+            lin[i] = gamma > 0 ? std::pow(v, gamma) : v <= 0.04045f ? v / 12.92f : std::pow((v + 0.055f) / 1.055f, 2.4f);
         }
+    }
+    if (pq_white != white) {
+        pq_white = white;
         for (int i = 0; i <= 4096; i++) {   // (linear light, 1 the paper white, to the 8-bit PQ code)
             const float y = std::pow(i / 4096.0f * white / 10000.0f, 0.1593017578125f);
             const float e = std::pow((0.8359375f + 18.8515625f * y) / (1 + 18.6875f * y), 78.84375f);
