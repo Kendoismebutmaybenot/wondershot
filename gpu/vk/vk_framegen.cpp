@@ -1292,6 +1292,15 @@ VkImage framegen_hdr(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
         wonder ? std::clamp(opts.hdr_highlight_start, 50, 150) / 100.0f : 0.6f, (float)mode,
         wonder ? 2.0f * std::clamp(opts.hdr_highlights, 0, 500) / 100.0f : 1.0f,
         wonder ? kSdrGamma[std::clamp(opts.hdr_sdr_gamma, 0, 2)] : 1.0f, (float)colour_vision, 0.0f};
+    {   // (what the HDR pass is given, said when it changes: mode, paper white, peak, knee, contrast, exposure (Wonder: the SDR EOTF))
+        static float said[6] = {-1, -1, -1, -1, -1, -1};
+        const float now[6] = {pc.mode, pc.white, pc.peak, pc.knee, pc.contrast, pc.exposure};
+        if (memcmp(said, now, sizeof now)) {
+            memcpy(said, now, sizeof now);
+            logf("vk: HDR pass: mode %.0f, paper white %.0f, peak %.0f, knee %.2f, contrast %.2f, exposure %.2f", now[0], now[1], now[2],
+                 now[3], now[4], now[5]);
+        }
+    }
     pass(cmd, hdr.pipe, {{src, scale.linear}, {hdr.out.view, VK_NULL_HANDLE}}, dw, dh, &pc, sizeof pc);
     return hdr.out.image;
 }

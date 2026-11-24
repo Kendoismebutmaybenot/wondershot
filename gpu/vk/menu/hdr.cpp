@@ -44,10 +44,11 @@ MENU_MODULE(hdr) {
               .help = "Where the highlights start to rise, in percent of the SDR white point: lower starts them earlier.",
               .value = &opts.hdr_highlight_start, .lo = 50, .hi = 150, .step = 5, .preset_exempt = true, .shown = on,
               .text = menu_text::percent})
-        .row({.key = "hdr_sdr_gamma", .label = "SDR gamma",
-              .help = "How the game's picture under paper white is decoded: 2.2 as most PC monitors show SDR (the default), 2.4 "
-                      "darker, sRGB the piecewise curve.",
-              .value = &opts.hdr_sdr_gamma, .lo = 0, .hi = 2, .choices = {"sRGB", "2.2", "2.4"}, .preset_exempt = true,
+        .row({.key = "hdr_sdr_gamma", .label = "SDR EOTF",
+              .help = "How the picture under paper white is shown, as an SDR display would: Gamma 2.2 as most PC monitors (the "
+                      "default), Gamma 2.4 darker in the shadows, None the sRGB curve as it is (raised blacks).",
+              .value = &opts.hdr_sdr_gamma, .lo = 0, .hi = 2, .choices = {"None", "Gamma 2.2", "Gamma 2.4"},
+              .preset_exempt = true,
               .shown = on})
         .row({.key = "hdr_exposure", .label = "Exposure",
               .help = "The scene's brightness before the game's tone curve.",
