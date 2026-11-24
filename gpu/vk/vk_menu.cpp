@@ -4778,6 +4778,17 @@ void menu_tick() {
                            : opts.pad_menu == 3 ? (int)HOS_PAD_RPADDLE1 : -1;
         if ((menu_pad >= 0 && pad(menu_pad)) || chord_now) press[0] = true;
     }
+    {   // (Wondershot) WONDER_MENU_AT_START: the builder's Game settings button starts the game with the menu open. Once, a moment
+        // after the first frames (the title has begun to draw), as the Insert key opens it; not if the menu is open already
+        static const bool at_start = getenv("WONDER_MENU_AT_START") != nullptr;
+        static bool done = !at_start;
+        static int64_t since = 0;
+        if (!done) {
+            if (!since) since = prof_now();
+            if (open_now.load()) done = true;
+            else if (prof_now() - since > 1500000000LL) done = true, press[0] = true;
+        }
+    }
     {   // holding an arrow or the D-pad repeats it: after 0.35 s, 12 a second, then 30 a second after 1.5 s held
         static int64_t held_since[5], next_repeat[5];
         const int pads[5] = {0, HOS_PAD_UP, HOS_PAD_DOWN, HOS_PAD_LEFT, HOS_PAD_RIGHT};

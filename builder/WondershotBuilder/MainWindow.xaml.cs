@@ -327,6 +327,7 @@ public partial class MainWindow : Window
     }
 
     void PlaySetup_Click(object sender, RoutedEventArgs e) { builtFolder = outDir; Play_Click(sender, e); }
+    void GameSettingsSetup_Click(object sender, RoutedEventArgs e) { builtFolder = outDir; GameSettings_Click(sender, e); }
 
     /// Asks GitHub (through the build script, which knows the release the sources are) whether the port has a newer release
     void CheckForUpdate()
@@ -363,12 +364,20 @@ public partial class MainWindow : Window
         StartBuild("--update-to", updateTag, "--update-url", updateUrl);
     }
 
-    void Play_Click(object sender, RoutedEventArgs e)
+    void Play_Click(object sender, RoutedEventArgs e) => Launch(false);
+
+    /// The game's settings are its Insert menu, which a key opens in the game: this starts the game with it open already
+    /// (WONDER_MENU_AT_START, read by the renderer's menu), so they can be set without going through the title first
+    void GameSettings_Click(object sender, RoutedEventArgs e) => Launch(true);
+
+    void Launch(bool openMenu)
     {
         var folder = builtFolder ?? outDir;
         var exe = Path.Combine(folder, "wonder.exe");
         if (!File.Exists(exe)) { MessageBox.Show(this, "wonder.exe is not in " + folder, "Wondershot Builder"); return; }
-        Process.Start(new ProcessStartInfo(exe) { WorkingDirectory = folder, UseShellExecute = true });
+        var psi = new ProcessStartInfo(exe) { WorkingDirectory = folder, UseShellExecute = false };
+        if (openMenu) psi.Environment["WONDER_MENU_AT_START"] = "1";
+        Process.Start(psi);
     }
 
     void OpenFolder_Click(object sender, RoutedEventArgs e)

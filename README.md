@@ -25,7 +25,7 @@ for the PC, so you need your own legally dumped copy of the game. **No game file
 - The Poplin house dialogue and the Bellabel Park event softlocks above 60 fps fixed
 - A Mario-themed Insert menu that uses the game's own font
 - DualSense HD haptics (over a cable) through [RenHDrum](https://github.com/trzz1214/RenHDrum) (MIT or Apache-2.0), built from its source in `third_party/renhdrum` and shipped in the builder
-- A builder app that makes the game folder from your dump, HDR shaders included
+- A builder app that makes the game folder from your dump, HDR shaders included, with a **Game settings** button that starts the game with its Insert menu already open
 
 ## Known issues
 
