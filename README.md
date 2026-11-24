@@ -1,9 +1,11 @@
 # Wondershot
 
-> **Work in progress.** Wondershot runs, and there is a builder app: point it at your own game dump (or its `.nup`), press Build, then
-> Play. It fetches the compiler and libraries it needs once (about 230 MB, each checked against `tools.lock`), recompiles the game on
-> your PC and sets the folder up. When a newer Wondershot release is out, the builder says so and Update downloads it and rebuilds
-> only what changed. The app is `builder/WondershotBuilder` (WPF, .NET 8); `scripts/wonder_builder_package.py` makes its folder.
+> **Alpha.** Get **WondershotBuilder** from [Releases](https://github.com/Kendoismebutmaybenot/wondershot/releases), unzip it
+> anywhere, run `WondershotBuilder.exe`, point it at your own game dump (a folder with `exefs` and `romfs`, or the game's `.nup`),
+> press Build, then Play. The first build fetches the compiler and libraries once (about 230 MB, each checked against
+> `tools.lock`), recompiles the game on your PC and sets the folder up; it takes a while and wants a fair amount of RAM. When a
+> newer Wondershot release is out, the builder says so and Update downloads it and rebuilds only what changed. The app is
+> `builder/WondershotBuilder` (WPF, .NET 8); `scripts/wonder_builder_package.py` makes its folder and zip.
 
 Wondershot is a static recompilation of **Super Mario Bros. Wonder – Nintendo Switch 2 Edition** for PC, built on
 [Longshot](https://git.magicbean.dev/MagicBeanDev/Longshot) by MagicBeanDev. It statically recompiles the game's own code
@@ -16,14 +18,16 @@ for the PC, so you need your own legally dumped copy of the game. **No game file
 - **RenoDX-style HDR**: real highlights above paper white, Highlights / Highlight start, scene grading (Exposure, Contrast,
   Shadows, Saturation, Highlight saturation) and SDR gamma, all live in the Insert menu. Menus stay SDR. Ported from the
   author's HDR for the Switch 1 recomp SuperWonders
-- In-level music and sound effects, movie audio
-- The Poplin house dialogue softlock above 60 fps fixed
+- Music and sound effects everywhere, hub worlds included, and movie audio
+- Players 2-4, per-player controls, controller and keyboard assignment, per-player motion controls
+- Button prompts that follow the controller in use (a stand-in for the system button font)
+- The Poplin house dialogue and the Bellabel Park event softlocks above 60 fps fixed
 - A Mario-themed Insert menu that uses the game's own font
+- A builder app that makes the game folder from your dump, HDR shaders included
 
 ## Known issues
 
-- Button prompts show as `?` (the system button font isn't there yet: a stand-in is planned)
-- No builder yet (see above)
+- Builds from the builder have no DLSS (it needs NVIDIA's SDK, which can't be shipped) and plain controller rumble
 - Not tested on many PCs: expect rough edges
 
 ## HDR shaders
