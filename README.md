@@ -27,7 +27,8 @@ for the PC, so you need your own legally dumped copy of the game. **No game file
 
 ## Known issues
 
-- Builds from the builder have no DLSS (it needs NVIDIA's SDK, which can't be shipped) and plain controller rumble
+- DLSS isn't used: the game doesn't need it, and its upscaling and frame generation hook features Wonder doesn't have
+- Controller rumble from the builder's build is plain motors (the HD rumble library isn't in it)
 - Not tested on many PCs: expect rough edges
 
 ## HDR shaders
