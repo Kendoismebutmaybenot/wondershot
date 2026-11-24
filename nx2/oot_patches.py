@@ -519,6 +519,32 @@ def patch_movie_frames(s):
     return s if MOVIE_DECL in s else s.replace('#include "a64.h"\n', '#include "a64.h"\n' + MOVIE_DECL, 1)
 
 
+# (Wonder) A scripted event's performer: f_800f65c0 is the update of the actor component that plays an event's commands (an
+# 8-state machine, its owner's +0x220), called each frame only while an event performs (site profile: never while walking about).
+# Some event commands wait on a check that passes only when the game's step is a whole frame: above 60 fps (step 0.5 at 120,
+# 0.667 at 90) the world map's palace event stopped after its camera pan and dropping the cap to 60 let it go on. The host holds
+# the step at 60 while this runs (hos_wonder_event_tick, host/nn_vi.c). The call's return address is checked: another game's
+# function at that address is left as it is.
+EVENT_HEAD = "void f_800f65c0(Ctx *__restrict A64_NOESC c) {\n"
+EVENT_SIG = "c->x[30] = 0x800f65f0ULL; A64_ICALL(c, _t); }"
+EVENT_CALL = "    hos_wonder_event_tick();   /* (a scripted event performs: nx2/oot_patches.py) */\n"
+EVENT_DECL = "void hos_wonder_event_tick(void);\n"
+
+
+def patch_event_tick(s):
+    """the event performer's host call; None when the file has no such function, s unchanged when its code differs or has it"""
+    head = s.find(EVENT_HEAD)
+    if head < 0:
+        return None
+    end = s.find("\nvoid f_", head + len(EVENT_HEAD))
+    body = s[head:end if end >= 0 else len(s)]
+    if EVENT_CALL in body or EVENT_SIG not in body:
+        return s
+    at = head + len(EVENT_HEAD)
+    s = s[:at] + EVENT_CALL + s[at:]
+    return s if EVENT_DECL in s else s.replace('#include "a64.h"\n', '#include "a64.h"\n' + EVENT_DECL, 1)
+
+
 # A looping animation one frame long (the frozen Zoras under the ice in adult Zora's Domain: start 0, end 1) is one pose. At the
 # console's 60 fps the clock's step is 1 and each update lands on the same phase. Under a Frame rate cap above 60 the step is the
 # frame's own time (0.36 at 165 fps), the phase moved by it each frame, and each frame drew another phase: the pose twitched (issue
@@ -1654,6 +1680,11 @@ def patch_file(s, name, protect_hearts=False):
         if movie != out:
             lines.append("oot_patches: the movie's frame count by the frames' time in " + name)
         out = movie
+    event = patch_event_tick(out)
+    if event is not None:
+        if event != out:
+            lines.append("oot_patches: the event performer's step hold in " + name)
+        out = event
     out, loops = patch_loop_steps(out)
     if loops:
         lines.append("oot_patches: %d animation clock(s) with whole frames for a loop of one frame in %s" % (loops, name))

@@ -222,9 +222,25 @@ void hos_wonder_scene_open(const char *p) {
         hos_log("vi: Wonder house %s: %s", house ? "loading" : "left", house ? "frame cap held at 60 (its dialogue)" : "the chosen frame cap again");
     }
 }
+/* (Wonder) While a scripted event performs (the lifted f_800f65c0 calls this each frame, nx2/oot_patches.py), the frame cap is
+   held at 60: some event commands wait on a check that passes only when the game's step is a whole frame (the world map's
+   palace event, the way to Bellabel Park, stopped above 60 fps after its camera pan). The chosen cap comes back a quarter
+   second after the event's last update. */
+static volatile int64_t wonder_event_at;
+void hos_wonder_event_tick(void) { __atomic_store_n(&wonder_event_at, hos_now_ns(), __ATOMIC_RELAXED); }
+static int wonder_event_hold(void) {
+    const int64_t at = __atomic_load_n(&wonder_event_at, __ATOMIC_RELAXED);
+    const int on = at && hos_now_ns() - at < 250000000;
+    static int was;
+    if (on != was) {
+        was = on;
+        hos_log("vi: Wonder event %s", on ? "performing: frame cap held at 60 (its commands)" : "over: the chosen frame cap again");
+    }
+    return on;
+}
 static int fps_max(void) {
     if (!fps_now) fps_refresh();
-    return wonder_house_hold && fps_now > 60 ? 60 : fps_now;
+    return fps_now > 60 && (wonder_house_hold || wonder_event_hold()) ? 60 : fps_now;
 }
 static int64_t next_frame_at, window_start, frames_in_window;
 static volatile LONG64 presents;
