@@ -59,6 +59,7 @@ sealed class Runner
     readonly List<string> args;
     Process? process;
     string? error;
+    readonly Queue<string> tail = new();   // (the last lines it said: a crash's traceback is here, not in an @@error line)
     volatile bool cancelled;
 
     public event Action<string>? Line;
@@ -101,6 +102,8 @@ sealed class Runner
         {
             if (line == null) return;
             if (line.StartsWith("@@error ")) error = line[8..];
+            else if (!line.StartsWith("@@") && line.Trim().Length > 0)
+                lock (tail) { tail.Enqueue(line); while (tail.Count > 15) tail.Dequeue(); }
             Line?.Invoke(line);
         }
         p.OutputDataReceived += (_, e) => Take(e.Data);
@@ -111,7 +114,10 @@ sealed class Runner
         p.Exited += (_, _) =>
         {
             p.WaitForExit();   // (the last lines read before this ends)
-            Finished?.Invoke(cancelled ? "cancelled" : p.ExitCode == 0 ? null : error ?? $"The build stopped (exit code {p.ExitCode}).");
+            string last;
+            lock (tail) last = string.Join("\n", tail);
+            Finished?.Invoke(cancelled ? "cancelled" : p.ExitCode == 0 ? null
+                : error ?? $"The build stopped (exit code {p.ExitCode}). Its last lines:\n\n{last}");
         };
     }
 

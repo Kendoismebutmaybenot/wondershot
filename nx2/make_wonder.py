@@ -843,5 +843,21 @@ def main():
     return 0
 
 
+def guarded():
+    """main(), with a crash said as an @@error: its traceback is in the log, and the app shows its last lines, not a bare exit code"""
+    try:
+        return main()
+    except (SystemExit, KeyboardInterrupt):
+        raise
+    except BaseException as error:   # noqa: BLE001 (anything: the player gets the words, the log gets the traceback)
+        import traceback
+        text = traceback.format_exc()
+        print(text, file=sys.stderr, flush=True)
+        hint = " The PC ran out of memory: close other programs and build again." if isinstance(error, MemoryError) else ""
+        say("@@error", "The build hit an unexpected problem: %s: %s.%s The last lines of the log:\n%s"
+            % (type(error).__name__, error, hint, "\n".join(text.strip().splitlines()[-8:])))
+        return 1
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(guarded())

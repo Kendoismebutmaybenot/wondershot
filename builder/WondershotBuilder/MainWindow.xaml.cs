@@ -42,6 +42,9 @@ public partial class MainWindow : Window
         new Step(4, "Play", "All set"),
     };
     readonly StringBuilder log = new();
+    StreamWriter? logFile;   // (every build's lines, as they come: the WondershotBuilder\logs folder in %LOCALAPPDATA%, one build-<time>.log each)
+    string? logPath;
+    static string LogsDir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WondershotBuilder", "logs");
     Runner? runner, checker;
     string? game;
     string outDir;
@@ -194,6 +197,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         log.Clear();
+        OpenLogFile();
         buildWarning = null;
         LogBox.Clear();
         Bar.Value = 0;
@@ -210,9 +214,35 @@ public partial class MainWindow : Window
         mine.Start();
     }
 
+    /// A file for this build's log, the last ten kept: what a player sends when a build stops
+    void OpenLogFile()
+    {
+        CloseLogFile();
+        logPath = null;
+        try
+        {
+            Directory.CreateDirectory(LogsDir);
+            foreach (var old in new DirectoryInfo(LogsDir).GetFiles("build-*.log").OrderByDescending(f => f.Name).Skip(9))
+                try { old.Delete(); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            logPath = Path.Combine(LogsDir, $"build-{DateTime.Now:yyyyMMdd-HHmmss}.log");
+            logFile = new StreamWriter(new FileStream(logPath, FileMode.Create, FileAccess.Write, FileShare.ReadWrite), new UTF8Encoding(false)) { AutoFlush = true };
+            logFile.WriteLine($"Wondershot Builder {typeof(MainWindow).Assembly.GetName().Version?.ToString(3)}, {DateTime.Now:s}");
+            logFile.WriteLine($"game: {game}");
+            logFile.WriteLine($"out: {outDir}");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { logFile = null; logPath = null; }
+    }
+
+    void CloseLogFile()
+    {
+        try { logFile?.Dispose(); } catch (IOException) { }
+        logFile = null;
+    }
+
     void OnLine(string line)
     {
         log.AppendLine(line);
+        try { if (!line.StartsWith("@@progress ") && !line.StartsWith("@@eta ")) logFile?.WriteLine(line); } catch (IOException) { }
         if (line.StartsWith("@@stage "))
         {
             var rest = line[8..];
@@ -263,10 +293,12 @@ public partial class MainWindow : Window
     void OnFinished(string? why)
     {
         building = false;
+        try { if (why != null && why != "cancelled") logFile?.WriteLine("-- stopped: " + why); } catch (IOException) { }
+        CloseLogFile();
         if (why == "cancelled") { ShowStepsFor("setup"); steps[0].State = gameOk ? 2 : 0; return; }
         if (why != null)
         {
-            ErrorBox.Text = why;
+            ErrorBox.Text = logPath == null ? why : why + "\n\nThe full log is saved at:\n" + logPath;
             for (var i = 1; i < 4; i++) if (steps[i].State == 1) steps[i].State = 0;
             Page("error");
             return;
@@ -286,6 +318,16 @@ public partial class MainWindow : Window
     void Cancel_Click(object sender, RoutedEventArgs e) => runner?.Cancel();
     void Back_Click(object sender, RoutedEventArgs e) { ShowStepsFor("setup"); steps[0].State = gameOk ? 2 : 0; }
     void Again_Click(object sender, RoutedEventArgs e) { ShowStepsFor("setup"); steps[0].State = gameOk ? 2 : 0; }
+    void OpenLogs_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            Directory.CreateDirectory(LogsDir);
+            if (logPath != null && File.Exists(logPath)) Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{logPath}\"") { UseShellExecute = true });
+            else Process.Start(new ProcessStartInfo(LogsDir) { UseShellExecute = true });
+        }
+        catch (Exception ex) when (ex is IOException or System.ComponentModel.Win32Exception) { }
+    }
     void CopyLog_Click(object sender, RoutedEventArgs e)
     {
         try { Clipboard.SetText(ErrorBox.Text + Environment.NewLine + Environment.NewLine + log); } catch (System.Runtime.InteropServices.ExternalException) { }

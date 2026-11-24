@@ -241,6 +241,7 @@
                                      TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" Padding="18,14"/>
                         </Border>
                         <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
+                            <Button Content="Open log folder" Style="{StaticResource GlassButton}" Click="OpenLogs_Click" Margin="0,0,10,0" Height="40"/>
                             <Button Content="Copy details" Style="{StaticResource GlassButton}" Click="CopyLog_Click" Margin="0,0,10,0" Height="40"/>
                             <Button Content="Back" Style="{StaticResource PinkButton}" Width="140" Height="40" Click="Back_Click" FontSize="15"/>
                         </StackPanel>
