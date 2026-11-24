@@ -545,6 +545,40 @@ def patch_event_tick(s):
     return s if EVENT_DECL in s else s.replace('#include "a64.h"\n', '#include "a64.h"\n' + EVENT_DECL, 1)
 
 
+# Switch 2 Wonder's PhysicsRigidBodyOnOff enter/leave and IsHitInfoRepOut enter/update.
+# The two contact callbacks both write their answer through the same helper before setting node flags.
+WONDER_SEED_SITES = (
+    (0x80559060, "c->x[30] = 0x8055907cULL; f_80138530(c);", "hos_wonder_seed_target(c, c->x[19], 0);"),
+    (0x80559310, "c->x[30] = 0x80559330ULL; f_80138530(c);", "hos_wonder_seed_target(c, c->x[19], 1);"),
+    (0x8029dc00, "c->x[30] = 0x8029dc18ULL; f_8029dc40(c);", "hos_wonder_seed_contact(c, c->x[19]);"),
+    (0x8029eaa0, "c->x[30] = 0x8029eab8ULL; f_8029dc40(c);", "hos_wonder_seed_contact(c, c->x[19]);"),
+)
+WONDER_SEED_DECL = ("extern void hos_wonder_seed_target(Ctx *, uint64_t, int);\n"
+                    "extern void hos_wonder_seed_contact(Ctx *, uint64_t);\n")
+
+
+def patch_wonder_seed(s):
+    patched = False
+    for addr, sig, call in WONDER_SEED_SITES:
+        head = "void f_%x(Ctx *__restrict A64_NOESC c) {\n" % addr
+        start = s.find(head)
+        if start < 0:
+            continue
+        end = s.find("\nvoid f_", start + len(head))
+        if end < 0:
+            end = len(s)
+        body = s[start:end]
+        if call not in body and sig in body:
+            # For sensor callbacks, the game's physics component lookup must have succeeded.
+            after = body.index(sig) + len(sig)
+            guard = "if (c->x[0]) " if "seed_target" in call else ""
+            s = s[:start] + body[:after] + "\n    " + guard + call + body[after:] + s[end:]
+            patched = True
+    if patched and WONDER_SEED_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + WONDER_SEED_DECL, 1)
+    return s
+
+
 # A looping animation one frame long (the frozen Zoras under the ice in adult Zora's Domain: start 0, end 1) is one pose. At the
 # console's 60 fps the clock's step is 1 and each update lands on the same phase. Under a Frame rate cap above 60 the step is the
 # frame's own time (0.36 at 165 fps), the phase moved by it each frame, and each frame drew another phase: the pose twitched (issue
@@ -1685,6 +1719,10 @@ def patch_file(s, name, protect_hearts=False):
         if event != out:
             lines.append("oot_patches: the event performer's step hold in " + name)
         out = event
+    seed = patch_wonder_seed(out)
+    if seed != out:
+        lines.append("oot_patches: Wonder Seed landing guard in " + name)
+        out = seed
     out, loops = patch_loop_steps(out)
     if loops:
         lines.append("oot_patches: %d animation clock(s) with whole frames for a loop of one frame in %s" % (loops, name))

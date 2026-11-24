@@ -227,7 +227,16 @@ void hos_wonder_scene_open(const char *p) {
    palace event, the way to Bellabel Park, stopped above 60 fps after its camera pan). The chosen cap comes back a quarter
    second after the event's last update. */
 static volatile int64_t wonder_event_at;
-void hos_wonder_event_tick(void) { __atomic_store_n(&wonder_event_at, hos_now_ns(), __ATOMIC_RELAXED); }
+void hos_wonder_event_tick(void) {
+    /* Switch 2 Wonder's named-event lookup (f_80130a60): the event manager's active flow and its name.
+       The player model-change flow handles the short transformation pause on power-up gain or loss. */
+    const uint64_t manager = recomp_load64(NULL, 0x83bb96d0ULL);
+    const uint64_t flow = manager ? recomp_load64(NULL, manager + 0x60) : 0;
+    const uint64_t name = flow ? recomp_load64(NULL, flow + 8) : 0;
+    if (name && !strcmp(GP(name), "PlayerChangeModelGamePause")) return;
+
+    __atomic_store_n(&wonder_event_at, hos_now_ns(), __ATOMIC_RELAXED);
+}
 static int wonder_event_hold(void) {
     const int64_t at = __atomic_load_n(&wonder_event_at, __ATOMIC_RELAXED);
     const int on = at && hos_now_ns() - at < 250000000;
@@ -360,6 +369,126 @@ volatile int hos_scene_rgba16f = 0;   /* (the scene buffer RGBA16F, not R11G11B1
 volatile uint64_t hos_step_probe = 0;   /* (f_80706be0's object, set by the lifted code when the frame-time hook is in this build; its
                                             +0xd58 is the game clock in 1/60 s: nx2/oot_patches.py) */
 volatile uint32_t hos_frame_seconds_bits = 0;   /* (the frame's seconds as a float's bits for that hook, 0: the game's own step) */
+
+/* A seed leaving a pipe disables Target until the Land animation finishes. At short frame steps it can lose
+   ground contact first and switch back to falling. Keep a successful contact for that actor until Target returns.
+   After devall96's SuperWonders fix (PR #38), with the Switch 2 actor and AI node layouts. */
+static SRWLOCK wonder_seed_lock = SRWLOCK_INIT;
+static volatile uint64_t wonder_seed_actor;
+static int64_t wonder_seed_started;
+static int wonder_seed_landed;
+
+static uint64_t wonder_node_actor(Ctx *c, uint64_t node) {
+    const uint64_t ai = recomp_load64(c, node + 8);
+    return ai ? recomp_load64(c, ai + 8) : 0;
+}
+
+static const char *wonder_actor_name(Ctx *c, uint64_t actor) {
+    const uint64_t name = actor ? recomp_load64(c, actor + 0x138) : 0;
+    return name ? GP(name) : "";
+}
+
+static int wonder_seed_name(const char *name) {
+    return !strcmp(name, "ItemWonderFinishWonderSead") || !strcmp(name, "ItemOriFinishWonderSead");
+}
+
+static int wonder_seed_trace(void) {
+    static int enabled = -1;
+    int trace = __atomic_load_n(&enabled, __ATOMIC_RELAXED);
+    if (trace < 0) {
+        trace = env_on("HOS_WONDER_SEED_TRACE");
+        __atomic_store_n(&enabled, trace, __ATOMIC_RELAXED);
+    }
+    return trace;
+}
+
+void hos_wonder_seed_target(Ctx *c, uint64_t node, int enabled) {
+    /* The lift identifies the sensor callbacks. Check their actor and body name directly. */
+    const uint64_t name = recomp_load64(c, node + 0x40) & ~3ULL;
+    const uint64_t target = name ? recomp_load64(c, name) : 0;
+    const char *body = target ? GP(target) : "";
+    const uint64_t actor = wonder_node_actor(c, node);
+    const int trace = wonder_seed_trace();
+    const int pickup = !strcmp(body, "Target");
+
+    if (trace || (!enabled && pickup && actor)) {
+        const char *name = wonder_actor_name(c, actor);
+        const int is_seed = wonder_seed_name(name);
+        if (trace) {
+            static unsigned other_calls;
+            if (is_seed || (__atomic_load_n(&other_calls, __ATOMIC_RELAXED) < 32 &&
+                            __atomic_fetch_add(&other_calls, 1, __ATOMIC_RELAXED) < 32))
+                hos_log("vi: Wonder seed trace: sensor %s, body %.32s, actor %.40s (%#llx)",
+                        enabled ? "restore" : "enter", body, name, (unsigned long long)actor);
+        }
+        if (!enabled && !is_seed) return;
+    }
+    if (!pickup || !actor) return;
+    if (!enabled) hos_log("vi: Wonder Seed Target off");
+
+    AcquireSRWLockExclusive(&wonder_seed_lock);
+    if (!enabled) {
+        wonder_seed_started = hos_now_ns();
+        wonder_seed_landed = 0;
+        __atomic_store_n(&wonder_seed_actor, actor, __ATOMIC_RELAXED);
+    } else if (wonder_seed_actor == actor) {
+        __atomic_store_n(&wonder_seed_actor, 0, __ATOMIC_RELAXED);
+        hos_log("vi: Wonder Seed Target on");
+    }
+    ReleaseSRWLockExclusive(&wonder_seed_lock);
+}
+
+void hos_wonder_seed_contact(Ctx *c, uint64_t node) {
+    const int trace = wonder_seed_trace();
+    const uint64_t tracked = __atomic_load_n(&wonder_seed_actor, __ATOMIC_RELAXED);
+    if (!tracked && !trace) return;
+    const uint64_t actor = wonder_node_actor(c, node);
+    if (trace) {
+        const char *name = wonder_actor_name(c, actor);
+        static unsigned samples;
+        if (__atomic_load_n(&samples, __ATOMIC_RELAXED) < 32 &&
+            __atomic_fetch_add(&samples, 1, __ATOMIC_RELAXED) < 32)
+            hos_log("vi: Wonder seed trace: contact callback, actor %.40s (%#llx)",
+                    name, (unsigned long long)actor);
+        if (wonder_seed_name(name)) {
+            static _Thread_local uint64_t last_actor;
+            static _Thread_local int last_contact;
+            const uint64_t result = recomp_load64(c, node + 0x30) & ~3ULL;
+            const int contact = result ? (int)recomp_load8(c, result) : -1;
+            if (actor != last_actor || contact != last_contact) {
+                hos_log("vi: Wonder seed trace: seed contact %d, tracking %d (%#llx)",
+                        contact, actor == tracked, (unsigned long long)actor);
+                last_actor = actor;
+                last_contact = contact;
+            }
+        }
+    }
+    if (!tracked) return;
+    AcquireSRWLockExclusive(&wonder_seed_lock);
+    if (wonder_seed_actor && hos_now_ns() - wonder_seed_started >= 3000000000LL) {
+        if (trace) hos_log("vi: Wonder seed trace: tracking expired (landed %d)", wonder_seed_landed != 0);
+        __atomic_store_n(&wonder_seed_actor, 0, __ATOMIC_RELAXED);
+    }
+
+    if (actor && actor == wonder_seed_actor) {
+        const uint64_t result = recomp_load64(c, node + 0x30) & ~3ULL;
+        if (result) {
+            const uint32_t bits = __atomic_load_n(&hos_frame_seconds_bits, __ATOMIC_RELAXED);
+            float seconds;
+            memcpy(&seconds, &bits, sizeof(seconds));
+            if (recomp_load8(c, result)) {
+                if (!wonder_seed_landed) wonder_seed_landed = 1;
+            } else if (wonder_seed_landed && seconds > 0 && seconds < 1.0f / 60.0f) {
+                recomp_store8(c, result, 1);
+                if (wonder_seed_landed == 1) {
+                    wonder_seed_landed = 2;
+                    hos_log("vi: Wonder Seed kept ground contact");
+                }
+            }
+        }
+    }
+    ReleaseSRWLockExclusive(&wonder_seed_lock);
+}
 volatile uint64_t hos_wonder_step_probe = 0;    /* (Wonder: its frame function's x19, set by the lifted step hook: nx2/oot_patches.py) */
 /* A movie's frame count while the frames' time is given (a Frame rate cap above 60): how many 60ths of a second this update of
    that movie player is worth, the rest carried to its next one, so the count the cutscene's cues are placed by keeps the clock
