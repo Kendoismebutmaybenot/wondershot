@@ -52,3 +52,7 @@ does only this step).
 
 Not affiliated with or endorsed by Nintendo. Super Mario Bros. Wonder is a trademark of Nintendo. This repository holds no
 Nintendo code or assets. Licensed under the GNU GPL v3, as Longshot is (see [LICENSE](LICENSE)).
+
+## AI assistance
+
+AI was used to assist in writing code for this project. All of it was reviewed and tested by the author.
