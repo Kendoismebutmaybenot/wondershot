@@ -38,7 +38,7 @@ MENU_MODULE(fps_counter) {
               .hint = hn_fps}, menu::before("bug_report").order(100))
         .row({.key = "fps_counter_position",
               .label = "FPS counter position",
-              .help = "The corner the FPS counter shows in. While this menu is open it shows at the top right.",
+              .help = "The corner the FPS counter shows in.",
               .value = &opts.fps_corner,
               .lo = 0, .hi = 3,
               .preset_exempt = true,

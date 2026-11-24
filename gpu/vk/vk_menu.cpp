@@ -3334,7 +3334,7 @@ float fps_scale(const ui::Ctx& c) {
 }
 
 /// The FPS counter, in the corner the FPS counter position row chooses (the safe area's; under the banner at the top right
-/// while the menu is open, unless it fits beside the menu's column on a very wide window). The number as it always looked:
+/// while the menu is open, except when previewing the FPS settings or when it fits beside the menu). The number:
 /// green outlined bold, "FPS" small beside it, the frame generation line under them, no plate.
 /// Past FPS (the row's levels, fps_stats.h), a tidy column under it, aligned to the same edge, with the same soft-shadowed
 /// text and no plate either: the frame time (green, amber or red against the cap's) and the 1% low; the graph of the last
@@ -3350,12 +3350,25 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
     const Tab num(c.f.strong, big), tab(c.f.strong, small), lab(c.f.strong, label);
     const float nw = num.width(fps_text), lw = ui::size_of(c.f.strong, small, "FPS").x;
     const float sw = fps_sub[0] ? tab.width(fps_sub) : 0;
-    const float gw = (fs::level_of(opts.show_fps) >= fs::kBreakdown ? 280 : 208) * s;   // (the column's width from the graph on; wider with the lanes)
-    // (while the menu is open: the top right under the banner, the number and the frame time only, unless the window is so much
-    // wider than 16:9 that the column fits beside the menu's, in its own corner)
+    const float gw = (level >= fs::kBreakdown ? 280 : 208) * s;   // (the graph's width; wider with the lanes)
     const bool beside = menu_ox >= (level >= fs::kGraph ? gw : nw + lw) + 2 * c.safe + 8 * s;
+    const bool over_menu = under_banner && !tune_mode && !beside;
+    // Preview the counter while its settings are in focus. Elsewhere the compact counter leaves the menu readable.
+    bool preview = false;
+    if (over_menu && page == 0 && !debug_warning) {
+        if (cur_tab == TAB_GAMEPLAY) {
+            const Row& selected = rows[tab_row_to_global(TAB_GAMEPLAY, tab_selected[TAB_GAMEPLAY])];
+            preview = selected.value == &opts.show_fps || selected.value == &opts.fps_corner ||
+                      selected.value == &opts.fps_size || is_fps_dev_row(selected);
+        } else {
+            preview = cur_tab == TAB_FPS_DEV;
+        }
+    }
     int corner = std::clamp(opts.fps_corner, 0, 3);
-    if (under_banner && !tune_mode && !beside) corner = 0, level = std::min(level, (int)fs::kFrameTime);
+    if (over_menu && !preview) {
+        corner = 0;
+        level = std::min(level, (int)fs::kFrameTime);
+    }
     const bool left = corner & 1, bottom = corner >= 2;
     // (the column's height, to anchor it at the bottom)
     const float row = 17 * s, gh = 50 * s, lh = 16 * s;
@@ -3401,10 +3414,13 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
     if (foot) h += 6 * s + foot * lh;
     // (a column taller than the window gives up the footer's last lines first, the render lines, then the hardware's: the
     // counter's own numbers keep their place at either anchor)
-    while (foot > 1 && h > c.h - 2 * c.safe) foot--, h -= lh;
+    const float top_edge = over_menu && page != 5 ? banner_h(c) + 10 * s : c.safe;
+    const float bottom_edge = preview ? ui::prompt_bar_top(c) - 4 * s : c.h - c.safe;
+    const float available = bottom_edge - (preview ? top_edge : c.safe);
+    while (foot > 1 && h > available) foot--, h -= lh;
     const bool render_lines = std::find(foot_lines, foot_lines + foot, 4) != foot_lines + foot;
     const float edge = left ? c.safe : c.w - c.safe;
-    const float top = bottom ? c.h - c.safe - h : under_banner && !tune_mode && page != 5 && !beside ? banner_h(c) + 10 * s : c.safe;
+    const float top = bottom ? bottom_edge - h : top_edge;
     // (x for a width at the column's edge)
     const auto at = [&](float w) { return left ? edge : edge - w; };
     // (the number's colour: at FPS the classic green whatever the rate, the counter as it always was; from Frame time on
