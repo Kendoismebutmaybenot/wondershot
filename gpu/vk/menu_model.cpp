@@ -585,7 +585,8 @@ PageBuilder& PageBuilder::row(Setting s, Place p) {
             "ultrawide_menus", "hud_layout", "hud_health_x", "hud_health_y", "hud_health_scale", "hud_buttons_x", "hud_buttons_y",
             "hud_buttons_scale", "hud_minimap_x", "hud_minimap_y", "hud_minimap_scale", "reset_hud_placement",
             "@Motion", "motion_controls", "motion_sensitivity_x", "motion_sensitivity_y", "invert_motion_x", "invert_motion_y",
-            "motion_deadzone", "shadow_resolution", "discord_status", "bug_report"};
+            "motion_deadzone", "shadow_resolution", "discord_status", "bug_report",
+            "audio_output"};   // (Speaker layout: Wonder is stereo only, host/nn_audio.c au_speakers)
         if (s.key)
             for (const char* k : not_in_wonder)
                 if (!strcmp(s.key, k)) return *this;

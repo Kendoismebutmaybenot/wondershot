@@ -883,7 +883,11 @@ static int au_speakers(void) {
             const char *want = getenv("HOS_AUDIO_CHANNELS");
             const int menu = want && *want ? 0 : au_menu_output();
             int n;
-            if (want && *want) {
+            if (1) {   /* (Wondershot) Wonder mixes stereo only (no 5.1 in the game): always stereo, the Speaker layout row hidden */
+                (void)menu;
+                n = 2;
+                hos_log("audio: stereo for the game (Wonder is stereo only)");
+            } else if (want && *want) {
                 n = atoi(want) >= 6 ? 6 : 2;
                 hos_log("audio: %s for the game (HOS_AUDIO_CHANNELS)", n == 6 ? "5.1" : "stereo");
             } else if (menu) {
