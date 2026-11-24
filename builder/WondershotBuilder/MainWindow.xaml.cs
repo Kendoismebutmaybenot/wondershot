@@ -42,9 +42,31 @@ public partial class MainWindow : Window
         new Step(4, "Play", "All set"),
     };
     readonly StringBuilder log = new();
-    StreamWriter? logFile;   // (every build's lines, as they come: the WondershotBuilder\logs folder in %LOCALAPPDATA%, one build-<time>.log each)
+    StreamWriter? logFile;   // (every build's lines, as they come: a logs folder beside the Builder, one build-<time>.log each)
     string? logPath;
-    static string LogsDir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WondershotBuilder", "logs");
+    /// The logs folder beside WondershotBuilder.exe, where a player looks first. A Builder in a folder it can't write to (Program
+    /// Files) keeps them in %LOCALAPPDATA%\WondershotBuilder\logs instead.
+    static string? logsDir;
+    static string LogsDir
+    {
+        get
+        {
+            if (logsDir != null) return logsDir;
+            var beside = Path.Combine(AppContext.BaseDirectory, "logs");
+            try
+            {
+                Directory.CreateDirectory(beside);
+                var probe = Path.Combine(beside, ".write-test");
+                File.WriteAllText(probe, "");
+                File.Delete(probe);
+                return logsDir = beside;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                return logsDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WondershotBuilder", "logs");
+            }
+        }
+    }
     Runner? runner, checker;
     string? game;
     string outDir;
