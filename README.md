@@ -30,6 +30,7 @@ for the PC, so you need your own legally dumped copy of the game. **No game file
 ## Known issues
 
 - Not tested on many PCs: expect rough edges
+- For gameplay issues, attach `logs/wondershot.log` from the game folder after reproducing the problem.
 
 ## HDR shaders
 

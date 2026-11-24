@@ -1188,7 +1188,7 @@ esac
     for section in ("### What happened", "### Summary (what Report automatically sends, too)", "Release build: No",
                     "Renderer: ", "Map: ", "CPU and RAM: ", "Settings: ", "Crash: ", "### Longshot version", "### Graphics card and driver version",
                     "### CPU, RAM and operating system", "### Changes from the defaults", "### Crash record",
-                    "### The end of longshot_log.txt", "### Not in this report", "vtest-1", "NVIDIA GeForce RTX 3090, NVIDIA 580.95.05",
+                    "### The end of the runtime log", "### Not in this report", "vtest-1", "NVIDIA GeForce RTX 3090, NVIDIA 580.95.05",
                     "Longshot crash record 1", "run_id: ", "ultrawide=1", "output_res=1920x1080",
                     "microphone_device=(value left out)", "RX_VK_PACE=1", "HOS_SECRET_TOKEN=(value left out)",
                     "~/Longshot report/cache/longshot_vk_pipelines.bin", "while you were playing"):

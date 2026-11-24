@@ -134,6 +134,10 @@ extern int hos_trace;
 void hos_log(const char *fmt, ...);
 void hos_log_at(int level, const char *fmt, ...);
 void hos_log_flush(void);
+#ifdef _WIN32
+/* Mirror game log messages before the first line is written, keeping inherited stderr available. */
+void hos_log_set_file(void *file);
+#endif
 /* (longshot) the slow-frame recorder (host/slow_frames.c, HOS_SLOW_FRAMES): its path (NULL: off), the sampler's interval, a
    present (rx_nvn_present), a sample and a sweep's end (the all-thread samplers) */
 const char *hos_slow_frames_path(void);

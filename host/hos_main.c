@@ -184,7 +184,7 @@ static void *reserve_large(SIZE_T size) {
 
 #if !defined(_WIN32) && !defined(A64_MEM_ZERO)
 extern int hos_guest_memfd;   /* (below) */
-static int startup_stderr = -1;   /* (keep startup warnings visible if stderr becomes longshot_log.txt) */
+static int startup_stderr = -1;   /* Keep startup warnings visible if stderr becomes the runtime log. */
 #endif
 /* The guest window lives at the constant A64_HOST_BASE (rt/a64.h), so lifted code never loads its base. */
 static int reserve_guest(void) {
@@ -2084,7 +2084,7 @@ static int game_main(int argc, char **argv) {
 #endif
     void hos_crash_record_prepare(const char *log_path);
     int hos_log_redact_file(const char *path, const char *run_id);   /* (host/log_redact.h) */
-    {   // (started from its icon the game has nowhere to log to: longshot_log.txt in the game folder's logs/ (host/game_layout.c), for players to send in)
+    {   /* Normal Windows launches keep a runtime log in the game folder. */
 #ifdef _WIN32
         {   /* (started again by the Insert menu's Restart now (host/hos_relaunch.c): the run before still has its log open until
                it exits, so wait for it (up to 10 s) before the log moves to .1, or the move fails and its log is overwritten) */
@@ -2119,12 +2119,19 @@ static int game_main(int argc, char **argv) {
            the programs it starts /dev/null there (measured), while a developer's own terminal session has a tty and
            keeps its live stream even with Steam's markers in the environment. A player's `game | tee` carries neither
            marker; a terminal stderr streams; a redirect to a real file (DISK) is honored as it was) */
-        if (err_kind == FILE_TYPE_UNKNOWN
+        const int own_stderr = err_kind == FILE_TYPE_UNKNOWN
 #ifndef _WIN32
             || (!prepare_only && err_kind == FILE_TYPE_PIPE &&
                 (getenv("SteamGameId") || getenv("SteamAppId")) && !isatty(STDIN_FILENO))
 #endif
-            ) {
+            ;
+#ifdef _WIN32
+        SetEnvironmentVariableA("WONDERSHOT_RUNTIME_LOG", NULL);
+        const int runtime_log = !prepare_only && !env_on("HOS_WONDER_HDR_BUILD");
+#else
+        const int runtime_log = own_stderr;
+#endif
+        if (runtime_log) {
             char path[MAX_PATH + 32];
             DWORD n = hos_game_path_a(path, MAX_PATH);
             while (n && path[n - 1] != 92 && path[n - 1] != 47) n--;
@@ -2132,15 +2139,14 @@ static int game_main(int argc, char **argv) {
                 memcpy(path + n, "logs", 5);
                 if (GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES) path[n + 4] = path[n - 1], n += 5;
             }
-            memcpy(path + n, "longshot_log.txt", 17);
+            memcpy(path + n, HOS_RUNTIME_LOG_NAME, sizeof HOS_RUNTIME_LOG_NAME);
             hos_crash_record_prepare(path);   /* recovery before rotation; keep this run's actual destination */
-            /* (the four runs before stay as longshot_log.1.txt (the last) to .4.txt: a player who started the game again after a
-               crash sent in the new run's log, and the crash was gone) */
+            /* Keep the last four runs as wondershot.1.log through wondershot.4.log. */
             char from[MAX_PATH + 32], to[MAX_PATH + 32];
             for (int k = 4; k >= 1; k--) {
-                if (k == 1) memcpy(from + n, "longshot_log.txt", 17), memcpy(from, path, n);
-                else memcpy(from, path, n), snprintf(from + n, 32, "longshot_log.%d.txt", k - 1);
-                memcpy(to, path, n), snprintf(to + n, 32, "longshot_log.%d.txt", k);
+                if (k == 1) memcpy(from, path, n + sizeof HOS_RUNTIME_LOG_NAME);
+                else memcpy(from, path, n), snprintf(from + n, 32, HOS_RUNTIME_LOG_STEM ".%d.log", k - 1);
+                memcpy(to, path, n), snprintf(to + n, 32, HOS_RUNTIME_LOG_STEM ".%d.log", k);
                 MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING);
             }
             /* (longshot) the run before's log without the player's user name: its own lines were written so, and what wrote to
@@ -2149,12 +2155,25 @@ static int game_main(int argc, char **argv) {
 #if !defined(_WIN32) && !defined(A64_MEM_ZERO)
             startup_stderr = fcntl(STDERR_FILENO, F_DUPFD_CLOEXEC, 0);
 #endif
-            /* (opened first: freopen closes stderr when it cannot open the file, and the next file opened would take its
-               descriptor. A log that cannot be written leaves the stderr the game was started with) */
-            FILE *log = fopen(path, "w");
-            if (log) {
-                fclose(log);
-                if (freopen(path, "w", stderr)) setvbuf(stderr, NULL, _IONBF, 0);
+            /* If rotation could not move a running game's file, leave it alone. */
+            if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) {
+#ifdef _WIN32
+                if (!own_stderr) {
+                    HANDLE file = CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+                    if (file != INVALID_HANDLE_VALUE) {
+                        hos_log_set_file(file);
+                        SetEnvironmentVariableA("WONDERSHOT_RUNTIME_LOG", path);
+                    }
+                } else
+#endif
+                {
+                    /* Test that the file can be opened before freopen closes stderr. */
+                    FILE *log = fopen(path, "w");
+                    if (log) {
+                        fclose(log);
+                        if (freopen(path, "w", stderr)) setvbuf(stderr, NULL, _IONBF, 0);
+                    }
+                }
             }
         } else hos_crash_record_prepare(NULL);   /* an externally supplied stderr, not the game's log */
     }

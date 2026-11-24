@@ -27,6 +27,7 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include "hos_crash_dialog.h"
 #include "hos_crash_record.h"
+#include "game_layout.h"
 #include "log_redact.h"
 #include "options_path.h"
 #include "../gpu/vk/crash_window_api.h"
@@ -300,8 +301,7 @@ static int log_is_run(const char *path, const char *run_id, uint64_t *at) {
     fclose(f);
     return yes;
 }
-/* This run's log: the path it named, else its first rotated name (longshot_log.1.txt: a start since moved it), when its run
-   id is the one wanted */
+/* Read the named log or its first rotated copy, whichever matches the run ID. */
 static int find_run_log(RunLog *r, const char *log, const char *run_id) {
     if (!log || !run_id || !run_id[0]) return 0;
     if (log_is_run(log, run_id, &r->from)) return snprintf(r->path, sizeof r->path, "%s", log), 1;
@@ -636,7 +636,7 @@ static char *report_text(const Report *in, size_t *len) {
     char now[17];
     utc_now(now);
     putf(&b, "Longshot crash report, made by the window Longshot shows after a crash (%s UTC). Longshot sent nothing: paste "
-             "this into the issue form, and attach the game folder's logs/longshot_log.txt if you can.\n\n", now);
+             "this into the issue form, and attach the game folder's logs/" HOS_RUNTIME_LOG_NAME " if you can.\n\n", now);
     put(&b, "### What happened\n\n");
     char message[1024];
     hos_crash_message(message, sizeof message, in->verdict, in->stage, in->cause, 0);
@@ -683,7 +683,7 @@ static char *report_text(const Report *in, size_t *len) {
         put(&b, "None: the game's crash handler wrote no record (it stopped before the game could run, or ended normally).\n\n");
     }
     if (in->log->found) {
-        putf(&b, "### The end of longshot_log.txt\n\nIts last %d lines (the home folder written %s, the user's name <user>):\n\n```\n",
+        putf(&b, "### The end of the runtime log\n\nIts last %d lines (the home folder written %s, the user's name <user>):\n\n```\n",
              in->log->count, in->who->windows ? "%USERPROFILE%" : "~");
         for (int i = 0; i < in->log->count; i++) {
             const char *line = in->log->lines[(in->log->next - in->log->count + i + HOS_CRASH_LOG_LINES) % HOS_CRASH_LOG_LINES];
@@ -692,8 +692,7 @@ static char *report_text(const Report *in, size_t *len) {
         }
         put(&b, "```\n\n");
     } else {
-        put(&b, "### longshot_log.txt\n\nNot found: the game logged to no file (started from a terminal or by a program that "
-                "reads its output), or its log was moved since.\n\n");
+        put(&b, "### Runtime log\n\nThe log was unavailable for this run.\n\n");
     }
     put(&b, "### Not in this report\n\nSaves, game files, the game's executable and caches, memory dumps, keys, the options file "
             "itself and the path of your home folder.\n");

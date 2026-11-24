@@ -185,6 +185,16 @@ static char *log_q[2048];
 static int log_head, log_count;
 static volatile LONG log_async = -1;
 static volatile DWORD log_writer;   /* log_main's thread */
+static HANDLE runtime_log;
+
+void hos_log_set_file(void *file) { runtime_log = file; }
+
+static void log_write_file(const char *text, size_t length) {
+    if (runtime_log) {
+        DWORD written;
+        WriteFile(runtime_log, text, (DWORD)length, &written, NULL);
+    }
+}
 
 static int log_take_locked(char **out) {
     int n = 0;
@@ -212,10 +222,12 @@ static void log_write(char **lines, int n) {
             at += len;
             free(lines[i]);
         }
+        log_write_file(all, total);
         fwrite(all, 1, total, stderr);
         free(all);
     } else {   /* (one line, or no memory for the batch: line by line) */
         for (int i = 0; i < n; i++) {
+            log_write_file(lines[i], strlen(lines[i]));
             fputs(lines[i], stderr);
             free(lines[i]);
         }
@@ -265,7 +277,9 @@ static void log_drain_raw(void) {
     while (log_count) {
         const char *line = log_q[log_head];
         DWORD written;
-        WriteFile(err, line, (DWORD)strlen(line), &written, NULL);
+        const size_t length = strlen(line);
+        log_write_file(line, length);
+        WriteFile(err, line, (DWORD)length, &written, NULL);
         log_head = (log_head + 1) % 2048;
         log_count--;
     }
@@ -368,6 +382,9 @@ static void hos_vlog(int level, const char *fmt, va_list ap) {
         hos_control_log(line);
     }
     if (log_queue(line)) return;
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
+    log_write_file(line, strlen(line));
+#endif
     fputs(line, stderr);
     fflush(stderr);
 }
@@ -397,9 +414,16 @@ void hos_fatal(Ctx *c, const char *fmt, ...) {
     log_flush();
     char clean[2200];   /* (longshot) without the player's user name, as every other line (host/log_redact.h) */
     hos_log_redact(clean, sizeof clean, buf);
-    fprintf(stderr, "[hos %s] FATAL: %s", cur ? cur->name : "host", clean);
-    if (c) fprintf(stderr, " (lr %#llx sp %#llx)", (unsigned long long)c->x[30], (unsigned long long)c->x[31]);
-    fprintf(stderr, "\n");
+    char line[2304];
+    snprintf(line, sizeof line, "[hos %s] FATAL: %s", cur ? cur->name : "host", clean);
+    const size_t length = strlen(line);
+    if (c) snprintf(line + length, sizeof line - length, " (lr %#llx sp %#llx)\n",
+                    (unsigned long long)c->x[30], (unsigned long long)c->x[31]);
+    else snprintf(line + length, sizeof line - length, "\n");
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
+    log_write_file(line, strlen(line));
+#endif
+    fputs(line, stderr);
     fflush(stderr);
     void hos_backtrace(void), hos_hostcall_stats(void);
     hos_backtrace();

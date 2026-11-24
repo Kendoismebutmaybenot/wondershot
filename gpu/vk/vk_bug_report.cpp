@@ -1,6 +1,7 @@
 // The Insert menu's Bug report: what is read and how it is written (vk_bug_report.h). No Vulkan and no menu here:
 // tests/test_bug_report.py compiles this file alone.
 #include "vk_bug_report.h"
+#include "../../host/game_layout.h"
 #include "compat/longshot_redact.h"
 
 #include <algorithm>
@@ -401,9 +402,12 @@ void fill_here(Inputs& in) {
     }
     if (const char* h = getenv("USERPROFILE")) in.home = h;
     if (const char* u = getenv("USERNAME")) in.user = u;
-    const HANDLE err = (HANDLE)_get_osfhandle(_fileno(stderr));   // (the game freopens stderr as longshot_log.txt)
+    const HANDLE err = (HANDLE)_get_osfhandle(_fileno(stderr));
     char path[MAX_PATH * 3 + 16];
-    if (err != INVALID_HANDLE_VALUE && GetFileType(err) == FILE_TYPE_DISK) {
+    const DWORD mirror = GetEnvironmentVariableA("WONDERSHOT_RUNTIME_LOG", path, (DWORD)sizeof path);
+    if (mirror && mirror < sizeof path) {
+        in.current_log = path;
+    } else if (err != INVALID_HANDLE_VALUE && GetFileType(err) == FILE_TYPE_DISK) {
         const DWORD n = GetFinalPathNameByHandleA(err, path, (DWORD)sizeof path, FILE_NAME_NORMALIZED);
         if (n && n < sizeof path) {
             in.current_log = path;
@@ -452,8 +456,12 @@ std::string write(const Inputs& in) {
 
     // the logs: this run's, and the run before's (its own after a start from the icon, which moves the last one to .1)
     const std::string log_dir = in.game_dir + "logs" + sep;   // (the game folder's logs/: host/game_layout.c)
-    const std::string g0 = log_dir + "longshot_log.txt", g1 = log_dir + "longshot_log.1.txt";
-    const std::string before = same_file(in.current_log, g0, in.windows) ? g1 : exists(g0) ? g0 : g1;
+    const std::string g0 = log_dir + HOS_RUNTIME_LOG_NAME, g1 = log_dir + HOS_PREVIOUS_RUNTIME_LOG_NAME;
+    std::string before = same_file(in.current_log, g0, in.windows) ? g1 : exists(g0) ? g0 : g1;
+    if (!exists(before)) {
+        const std::string old = log_dir + "longshot_log.txt";
+        before = same_file(in.current_log, old, in.windows) || !exists(old) ? log_dir + "longshot_log.1.txt" : old;
+    }
     LogFacts now, last;
     if (!in.current_log.empty()) now = copy_log(in.current_log, dir + "longshot_log.txt", in);
     if (!same_file(before, in.current_log, in.windows)) last = copy_log(before, dir + "longshot_log.1.txt", in);

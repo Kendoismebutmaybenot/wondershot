@@ -740,6 +740,7 @@ def dump_hdr_programs(out):
         os.makedirs(cache)
     env = dict(os.environ)
     env["RX_VK_DUMP_FRAG"] = ",".join(HDR_PROGRAMS)
+    env["HOS_WONDER_HDR_BUILD"] = "1"
     log = os.path.join(out, "logs", "hdr_dump.log")
     os.makedirs(os.path.dirname(log), exist_ok=True)
     try:

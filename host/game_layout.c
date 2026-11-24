@@ -3,7 +3,7 @@
      play files, the prepare's record, the driver's faults) and the button prompts made from the player's controls (cache/prompts,
      host/prompts.c). Made for this build and this GPU, several GB: its name says it can be deleted, and the next start makes it
      again;
-   - logs/: longshot_log.txt and the runs before it, and the other logs and traces a run writes.
+   - logs/: wondershot.log, its previous runs, and the other logs and traces a run writes.
    Both are made at the start, before anything writes there; the renderer finds them by gpu/vk/vk_paths.h's cache_path and
    log_path. What a build from before left loose beside the game is moved into them once: renames in the same folder, never over
    a file already there (one that cannot move stays, and the log says so). The Vulkan pipeline cache is renamed on the way, from
