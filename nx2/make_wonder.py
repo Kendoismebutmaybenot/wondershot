@@ -141,9 +141,17 @@ def check(game, work, tools):
         return
     try:
         ids = ["%016x" % t["id"] for t in n.titles]
-        ok = any(i.startswith("0400") or i.startswith("0100") for i in ids) and any(i[:13] == "010015100b514" or i[:13] == "040015100b514" for i in ids)
+        # (the Switch 2 Edition's program is 040015100b514001. A package with only 010015100b514000 is the Switch 1 game, which
+        # circulates under the Switch 2 Edition's name)
+        ok = any(i[:13] == "040015100b514" for i in ids)
+        switch1 = any(i[:13] == "010015100b514" and i[13:] == "000" for i in ids)
     finally:
         n.f.close()
+    if not ok and switch1:
+        say("@@check", "bad", "This .nup is the Nintendo Switch 1 version of Super Mario Bros. Wonder (title 010015100B514000), "
+            "whatever its file name says. Wondershot is made from the Nintendo Switch 2 Edition, whose own package has the title "
+            "040015100B514001. A Switch 1 package cannot be used.")
+        return
     if ok:
         say("@@check", "ok", "Super Mario Bros. Wonder – Nintendo Switch 2 Edition (.nup, %d title%s)." % (len(ids), "" if len(ids) == 1 else "s"))
     else:

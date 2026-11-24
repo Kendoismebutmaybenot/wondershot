@@ -253,7 +253,9 @@ class Nup:
         return self.strings[off:off + n].decode("utf-8")
 
     def walk(self, d, prefix=""):
-        """(relative path, file record) for every file under dir d."""
+        """(relative path, file record) for every file under dir d. A title with no such part (a DLC has no exefs: 0xffffffff) has none."""
+        if d == 0xffffffff:
+            return
         no, nl, first, n = self.dirs[d]
         for k in self.kids[first:first + n]:
             if k < self.nd:
@@ -443,7 +445,8 @@ def verify(nup, titles=None, only=None):
 
 def pick_title(nup, want):
     if want is None:
-        return max(nup.titles, key=lambda t: t["version"])   # (the newest: the update over the base)
+        # (the newest: the update over the base; of the titles that have an exefs, a DLC's newer version is not the game)
+        return max(nup.titles, key=lambda t: (t["exefs"] != 0xffffffff, t["version"]))
     for t in nup.titles:
         if str(t["index"]) == want or str(t["version"]) == want or "%016x" % t["id"] == want.lower():
             return t
