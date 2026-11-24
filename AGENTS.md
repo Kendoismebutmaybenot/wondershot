@@ -59,10 +59,13 @@ Tags are `vX.Y.Z-alphaN`, published as **pre-releases**; the Builder's update ch
 which hides pre-releases) and orders `alpha < beta < rc < final`.
 
 1. Commit and push `main` (`git push github wondershot-main:main` from the worktree branch).
-2. `dotnet publish builder/WondershotBuilder -c Release -o <pub>`, then
-   `python -I scripts/wonder_builder_package.py <out> --publish <pub> --zip <zip> --version <tag>`.
+2. `python -I scripts/renhdrum.py build --target windows --llvm-mingw <llvm-mingw folder> --out <dll>` (RenHDrum's haptics, from
+   `third_party/renhdrum`; the same source gives the same bytes, and a build without it leaves every pad on plain motors), then
+   `dotnet publish builder/WondershotBuilder -c Release -o <pub>`, then
+   `python -I scripts/wonder_builder_package.py <out> --publish <pub> --zip <zip> --version <tag> --renhdrum <dll>`.
 3. Lint the zip: no game-like names (`.nso .nca .nup .bin .spv`, `romfs/`, `shader_overrides`, `a64emit.dll`), every source
-   file in `tools/` is in `git ls-files`, `tools/version.txt` is the tag.
+   file in `tools/` is in `git ls-files` (but `tools/third_party/renhdrum/renhdrum.dll`, the one built file), `tools/version.txt`
+   is the tag.
 4. `gh release create <tag> <zip> --target <full commit sha> --prerelease --title "Wondershot <tag>" --notes-file <notes>`.
 5. Check `python -I nx2/make_wonder.py --check-update --tools <a folder whose version.txt is the previous tag>` offers it.
 

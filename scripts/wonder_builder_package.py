@@ -1,7 +1,7 @@
 """The Wondershot Builder's folder and zip: the app (builder/WondershotBuilder) with the sources its build reads under tools\\ and the
 Python that runs them. No game data is involved. Python's standard library only.
 
-    python -I scripts/wonder_builder_package.py <out folder> --publish <dotnet publish folder> [--zip <file>] [--version <x.y.z>]
+    python -I scripts/wonder_builder_package.py <out folder> --publish <dotnet publish folder> [--zip <file>] [--version <x.y.z>] [--renhdrum <dll>]
 
 The publish folder is `dotnet publish builder/WondershotBuilder -c Release` (self-contained: the player installs nothing). The folder
 made is WondershotBuilder.exe, its files, and tools\\ with the gpu, host, nx2, scripts, third_party and assets the build needs,
@@ -66,6 +66,16 @@ def package(a):
     tools.install(stage, [tools.named(tools.load(), "python")])
     shutil.move(os.path.join(stage, "LongshotBuilder", "tools", "python"), os.path.join(dest, "python"))
     shutil.rmtree(stage)
+    dll = getattr(a, "renhdrum", None)
+    if dll:   # (scripts/renhdrum.py build: where nx2/make_wonder.py's assemble looks, so the player's game folder gets it)
+        import renhdrum
+        with open(dll, "rb") as f:
+            bad = renhdrum.problems(f.read(), "windows")   # (a Linux library under the name: a "Bad Image" box on Windows)
+        if bad:
+            print("error: %s: %s" % (dll, "; ".join(bad)), file=sys.stderr)
+            return 1
+        os.makedirs(os.path.join(dest, "third_party", "renhdrum"), exist_ok=True)
+        shutil.copyfile(dll, os.path.join(dest, "third_party", "renhdrum", "renhdrum.dll"))
     with open(os.path.join(dest, "version.txt"), "w", encoding="utf-8") as f:
         f.write((a.version or "dev") + "\n")
     print("package folder: %s (%d source files)" % (out, total))
@@ -90,6 +100,7 @@ def main():
     p.add_argument("--publish", required=True)
     p.add_argument("--zip")
     p.add_argument("--version")
+    p.add_argument("--renhdrum", help="renhdrum.dll (scripts/renhdrum.py build): RenHDrum's DualSense and Xbox haptics, in the package")
     return package(p.parse_args())
 
 

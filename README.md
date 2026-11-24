@@ -23,12 +23,12 @@ for the PC, so you need your own legally dumped copy of the game. **No game file
 - Button prompts that follow the controller in use (a stand-in for the system button font)
 - The Poplin house dialogue and the Bellabel Park event softlocks above 60 fps fixed
 - A Mario-themed Insert menu that uses the game's own font
+- DualSense and Xbox HD rumble through [RenHDrum](https://github.com/trzz1214/RenHDrum) (MIT or Apache-2.0), built from its source in `third_party/renhdrum` and shipped in the builder
 - A builder app that makes the game folder from your dump, HDR shaders included
 
 ## Known issues
 
 - DLSS isn't used: the game doesn't need it, and its upscaling and frame generation hook features Wonder doesn't have
-- Controller rumble from the builder's build is plain motors (the HD rumble library isn't in it)
 - Not tested on many PCs: expect rough edges
 
 ## HDR shaders
