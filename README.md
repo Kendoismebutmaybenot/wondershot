@@ -28,7 +28,6 @@ for the PC, so you need your own legally dumped copy of the game. **No game file
 
 ## Known issues
 
-- DLSS isn't used: the game doesn't need it, and its upscaling and frame generation hook features Wonder doesn't have
 - Not tested on many PCs: expect rough edges
 
 ## HDR shaders
