@@ -1,7 +1,7 @@
 <Window x:Class="WondershotBuilder.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Wondershot Builder" Width="1000" Height="730" MinWidth="1000" MinHeight="730"
+        Title="Wondershot Builder" Width="1000" Height="800" MinWidth="1000" MinHeight="800"
         WindowStyle="None" AllowsTransparency="True" Background="Transparent" ResizeMode="CanMinimize"
         WindowStartupLocation="CenterScreen" AllowDrop="True" Icon="wonder.ico" UseLayoutRounding="True" SnapsToDevicePixels="True"
         TextOptions.TextFormattingMode="Ideal" TextOptions.TextRenderingMode="ClearType">
@@ -96,10 +96,10 @@
                                        Text="Wondershot is built right here on your PC from your own copy of Super Mario Bros. Wonder – Nintendo Switch 2 Edition. Point the builder at it and press Build."/>
                         </StackPanel>
 
-                        <Grid Grid.Row="1" Margin="0,18,0,0">
+                        <Grid Grid.Row="1" Margin="0,14,0,0">
                             <Border CornerRadius="6" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource EdgeBrush}" BorderThickness="1"/>
                             <Border x:Name="DropGlow" CornerRadius="6" Background="#331F58D2" BorderBrush="#B34E86EC" BorderThickness="1" Visibility="Collapsed"/>
-                            <StackPanel Margin="26,22" HorizontalAlignment="Center">
+                            <StackPanel Margin="26,16" HorizontalAlignment="Center">
                                 <TextBlock x:Name="DropTitle" Text="Drop your game here" FontFamily="{StaticResource Display}" FontSize="19" TextWrapping="NoWrap" HorizontalAlignment="Center"/>
                                 <TextBlock x:Name="DropSub" Text="a folder with exefs and romfs, or the game's .nup file" FontSize="12.5" Foreground="{StaticResource DimBrush}" TextWrapping="NoWrap" HorizontalAlignment="Center" Margin="0,2,0,0"/>
                                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,16,0,0">
@@ -129,7 +129,7 @@
                                     </StackPanel>
                                 </DockPanel>
                             </Border>
-                            <TextBlock Text="INSTALL TO" Style="{StaticResource SectionLabel}" Margin="2,20,0,6"/>
+                            <TextBlock Text="INSTALL TO" Style="{StaticResource SectionLabel}" Margin="2,14,0,6"/>
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
@@ -139,6 +139,28 @@
                                     <TextBlock x:Name="OutText" FontSize="13.5" Foreground="{StaticResource SoftBrush}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
                                 </Border>
                                 <Button Grid.Column="1" Content="Change…" Style="{StaticResource GlassButton}" Click="ChangeOut_Click"/>
+                            </Grid>
+                            <TextBlock Text="GAME FILES" Style="{StaticResource SectionLabel}" Margin="2,12,0,6"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="10"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <RadioButton x:Name="FilesLink" GroupName="gamefiles" IsChecked="True" Style="{StaticResource ChoiceCard}"
+                                             ToolTip="The game folder reads your dump where it is, through a link. Nothing is copied, so don't move or delete the dump (for a .nup, the builder's own work folder holds it).">
+                                    <StackPanel>
+                                        <TextBlock Text="Keep them where they are" FontWeight="SemiBold" FontSize="13.5"/>
+                                        <TextBlock Text="Linked: no extra space. Don't move the dump." FontSize="11.5" Foreground="{StaticResource DimBrush}" TextWrapping="NoWrap"/>
+                                    </StackPanel>
+                                </RadioButton>
+                                <RadioButton x:Name="FilesCopy" Grid.Column="2" GroupName="gamefiles" Style="{StaticResource ChoiceCard}"
+                                             ToolTip="romfs and dlc are copied into the game folder, which then stands on its own. It takes several GB more and a few minutes.">
+                                    <StackPanel>
+                                        <TextBlock Text="Copy into the game folder" FontWeight="SemiBold" FontSize="13.5"/>
+                                        <TextBlock Text="Stands alone: several GB more space." FontSize="11.5" Foreground="{StaticResource DimBrush}" TextWrapping="NoWrap"/>
+                                    </StackPanel>
+                                </RadioButton>
                             </Grid>
                         </StackPanel>
 

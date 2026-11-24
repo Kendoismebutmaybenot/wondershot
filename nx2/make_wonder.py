@@ -3,6 +3,7 @@
 
     python -I nx2/make_wonder.py --check --game <.nup or folder>
     python -I nx2/make_wonder.py --game <.nup or folder> --out <folder> [--work <folder>] [--tools <folder>] [--jobs <n>]
+                                 [--game-files link|copy]
     python -I nx2/make_wonder.py --check-update                      (is there a newer Wondershot release on GitHub?)
     ... --update-to <tag> --update-url <url>                         (with a build: the release's sources first, then what changed)
     python -I nx2/make_wonder.py --hdr-only --out <folder>            (only the HDR shaders, for a folder built already)
@@ -15,7 +16,7 @@ The steps are the ones the author ran by hand: the build tools (tools.lock: the 
 translation of its code (nx2/lift.py), the compile (nx2/build.py), and the game folder put together. Lines the app reads, each on its
 own line of stdout:
 
-    @@stage <id> <text>      a step begins: tools, dump, lift, compile, assemble, hdr, finish
+    @@stage <id> <text>      a step begins: tools, dump, lift, compile, files (copy mode), assemble, hdr, finish
     @@progress <0..1>        how far the whole build is
     @@eta <seconds>          the compile's time left
     @@check <ok|bad> <text>  (--check) the answer
@@ -43,8 +44,8 @@ EXE, VK = "wonder.exe", "wonder_vk.dll"
 SUPPORTED_BUILD = "ec47e6f8"
 
 # the share of the whole build each step is, for the bar
-SPAN = {"update": (0.00, 0.03), "tools": (0.03, 0.07), "dump": (0.07, 0.13), "lift": (0.13, 0.30), "compile": (0.30, 0.94),
-        "assemble": (0.94, 0.955), "hdr": (0.955, 0.995)}
+SPAN = {"update": (0.00, 0.03), "tools": (0.03, 0.07), "dump": (0.07, 0.13), "lift": (0.13, 0.30), "compile": (0.30, 0.90),
+        "files": (0.90, 0.94), "assemble": (0.94, 0.955), "hdr": (0.955, 0.995)}
 LIFT_STEPS = 7   # (nx2/lift.py's "lift: <step> in <s>" lines)
 
 
@@ -415,7 +416,7 @@ def extract_nup(game, dump):
 GAME_PATH = [""]   # (the --game the build was started with: written into the folder's wondershot_version.txt)
 
 
-def build(game, out, work, tools, jobs, update=None):
+def build(game, out, work, tools, jobs, update=None, files="link"):
     t0 = time.time()
     GAME_PATH[0] = game
     if update:
@@ -443,6 +444,9 @@ def build(game, out, work, tools, jobs, update=None):
     if not bid.startswith(SUPPORTED_BUILD):
         fail("This is build %s of the game. Wondershot is made for build %s." % (bid[:8], SUPPORTED_BUILD))
     progress("dump", 1.0)
+    pairs = [(src, os.path.join(out, name)) for name, src in (("romfs", romfs), ("dlc", dlc)) if src]
+    if files == "copy":
+        check_space(out, pairs)
 
     env = tool_env(tools, work, exefs, romfs)
     os.makedirs(work, exist_ok=True)
@@ -478,7 +482,10 @@ def build(game, out, work, tools, jobs, update=None):
 
     # the folder
     stage("assemble", "Putting your game folder together")
-    assemble(out, work, tools, dlc, romfs, exefs)
+    if files == "copy":
+        stage("files", "Copying your game's files into the folder")
+        copy_game_files(out, pairs)
+    assemble(out, work, tools, dlc, romfs, exefs, files)
     make_hdr(out, tools)
     stage("finish", "All set")
     say("@@progress", "1")
@@ -504,6 +511,87 @@ def link_or_copy(src, dst):
         shutil.copy2(src, dst)
 
 
+def lp(path):
+    """A path Windows takes beyond 260 characters (the game's romfs has long ones)"""
+    path = os.path.abspath(path)
+    return path if path.startswith("\\\\?\\") or len(path) < 240 else "\\\\?\\" + path
+
+
+def is_link(path):
+    return os.path.islink(path) or os.path.isjunction(path)
+
+
+def copy_plan(src, dst):
+    """[(source file, its copy, size)] still to copy from src into dst: a file there of the same size and not older is kept, so
+    a build again copies what changed (and a stopped copy goes on where it was)"""
+    todo = []
+    linked = is_link(dst)   # (a junction of an earlier build reads the dump itself: nothing is there yet, all is to be copied)
+    for base, _, names in os.walk(lp(src)):
+        rel = os.path.relpath(base, lp(src))
+        for n in names:
+            f = os.path.join(base, n)
+            t = os.path.join(lp(dst), n if rel == "." else os.path.join(rel, n))
+            try:
+                st = os.stat(f)
+                if not linked and os.path.isfile(t) and os.stat(t).st_size == st.st_size and os.stat(t).st_mtime >= st.st_mtime - 2:
+                    continue
+                todo.append((f, t, st.st_size))
+            except OSError:
+                todo.append((f, t, 0))
+    return todo
+
+
+def free_bytes(path):
+    """The free space of the drive path is (or would be) on"""
+    path = os.path.abspath(path)
+    while path and not os.path.exists(path):
+        parent = os.path.dirname(path)
+        if parent == path:
+            break
+        path = parent
+    return shutil.disk_usage(path).free
+
+
+def check_space(out, pairs):
+    """Stops before the long steps when copying the game's files would not fit: [(source, its place in the folder)]"""
+    need = sum(size for src, dst in pairs for _, _, size in copy_plan(src, dst))
+    free = free_bytes(out)
+    if need + (1 << 30) > free:
+        fail("Copying your game's files into %s needs about %.1f GB, and %.1f GB are free on that drive. Choose a folder on "
+             "a drive with room, or keep the files where they are." % (out, need / 1e9, free / 1e9))
+    say("copying the game's files will take about %.1f GB" % (need / 1e9))
+
+
+def copy_game_files(out, pairs):
+    """romfs and dlc as real folders in the game folder (a junction of an earlier build goes first: only the link, never what
+    it points at), copied from where the dump is. Big files go through a .part file, so a stop leaves none half made"""
+    for src, dst in pairs:
+        if os.path.lexists(dst) and is_link(dst):
+            os.rmdir(dst)
+        os.makedirs(lp(dst), exist_ok=True)
+        for base, _, names in os.walk(lp(dst)):   # (a copy stopped before: its half-made files go)
+            for n in names:
+                if n.endswith(".part"):
+                    os.remove(os.path.join(base, n))
+    plan = [(pair, item) for pair in pairs for item in copy_plan(*pair)]
+    total = sum(item[2] for _, item in plan) or 1
+    done, last = 0, 0
+    for _, (f, t, size) in plan:
+        os.makedirs(os.path.dirname(t), exist_ok=True)
+        shutil.copyfile(f, t + ".part")
+        os.replace(t + ".part", t)
+        try:
+            shutil.copystat(f, t)
+        except OSError:
+            pass
+        done += size
+        if done - last >= (64 << 20) or done == total:
+            last = done
+            progress("files", done / total)
+            say("copied %.1f of %.1f GB" % (done / 1e9, total / 1e9))
+    progress("files", 1.0)
+
+
 def junction(link, target):
     """A directory junction (no administrator needed): the game folder reads the player's dump where it is"""
     if os.path.lexists(link):
@@ -516,7 +604,7 @@ def junction(link, target):
     return r.returncode == 0
 
 
-def assemble(out, work, tools, dlc, romfs, exefs):
+def assemble(out, work, tools, dlc, romfs, exefs, files="link"):
     os.makedirs(out, exist_ok=True)
     build_dir = os.path.join(work, "sa", "build")
     image = os.path.join(work, "sa", "image", "image.bin")
@@ -536,11 +624,23 @@ def assemble(out, work, tools, dlc, romfs, exefs):
             if os.path.isfile(p):
                 shutil.copy2(p, os.path.join(out, n))
                 break
-    # the game's files, read where they are
+    # the game's files: read where they are (a junction), or already copied into the folder (files == "copy")
+    stamp = os.path.join(out, "wondershot_version.txt")
+    copied_before = False
+    try:
+        with open(stamp, encoding="utf-8") as f:
+            copied_before = "files=copy" in f.read().split()
+    except OSError:
+        pass
     for name, target in (("romfs", romfs), ("dlc", dlc)):
-        if target is None:
+        if files == "copy":
             continue
         link = os.path.join(out, name)
+        if copied_before and os.path.isdir(link) and not is_link(link):   # (our own copy of an earlier build: now to be linked)
+            say("the copy of the game's %s is removed: the folder reads your dump in place now" % name)
+            shutil.rmtree(lp(link))
+        if target is None:
+            continue
         if not junction(link, target):
             fail("%s could not be linked to %s. Is %s already something else?" % (link, target, link))
     # the button icons' font, drawn here (nx2/wonder_prompt_font.py) from Windows' own Segoe UI for the letters
@@ -554,7 +654,7 @@ def assemble(out, work, tools, dlc, romfs, exefs):
         os.makedirs(os.path.join(out, folder), exist_ok=True)
     # what the builder app reads to say this folder is Wondershot, which release built it, and which game to build again from
     with open(os.path.join(out, "wondershot_version.txt"), "w", encoding="utf-8") as f:
-        f.write("version=%s\nbuilt=%s\ngame=%s\n" % (installed_version(tools), time.strftime("%Y-%m-%d %H:%M"), GAME_PATH[0]))
+        f.write("version=%s\nbuilt=%s\ngame=%s\nfiles=%s\n" % (installed_version(tools), time.strftime("%Y-%m-%d %H:%M"), GAME_PATH[0], files))
 
 
 # ---- HDR: the game's tone mapper and final copy, edited on the player's PC (scripts/renodx_wonder_sw2.py) ----
@@ -713,6 +813,8 @@ def main():
     ap.add_argument("--jobs", type=int, default=0)
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--check-update", action="store_true")
+    ap.add_argument("--game-files", choices=("link", "copy"), default="link",
+                    help="link: the game folder reads the dump where it is; copy: romfs and dlc are copied into the folder")
     ap.add_argument("--hdr-only", action="store_true", help="only make shader_overrides/hdr for the --out folder (built already)")
     ap.add_argument("--update-to")
     ap.add_argument("--update-url")
@@ -737,7 +839,7 @@ def main():
         fail("--out is missing.")
     jobs = a.jobs or max(1, (os.cpu_count() or 4) - 1)
     update = (a.update_to, a.update_url) if a.update_to and a.update_url else None
-    build(game, os.path.abspath(a.out), os.path.abspath(work), os.path.abspath(tools), jobs, update)
+    build(game, os.path.abspath(a.out), os.path.abspath(work), os.path.abspath(tools), jobs, update, a.game_files)
     return 0
 
 

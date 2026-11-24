@@ -101,6 +101,29 @@
             </Setter>
         </Style>
 
+        <!-- A choice card: one of a few options, the chosen one tinted in the accent -->
+        <Style x:Key="ChoiceCard" TargetType="RadioButton">
+            <Setter Property="Foreground" Value="{StaticResource InkBrush}"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Border x:Name="face" CornerRadius="6" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource EdgeBrush}" BorderThickness="1" Padding="14,7">
+                            <ContentPresenter/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="face" Property="Background" Value="{StaticResource PanelHotBrush}"/></Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="face" Property="Background" Value="#401F58D2"/>
+                                <Setter TargetName="face" Property="BorderBrush" Value="#CC4E86EC"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45"/></Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <!-- Title-bar buttons: bare glyphs that light up on hover -->
         <Style x:Key="ChromeButton" TargetType="Button">
             <Setter Property="Width" Value="32"/>

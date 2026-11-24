@@ -28,7 +28,7 @@ sealed class Step : INotifyPropertyChanged
 
 public partial class MainWindow : Window
 {
-    sealed record Settings(string? Game, string? Out);
+    sealed record Settings(string? Game, string? Out, bool Copy = false);
 
     static readonly string SettingsPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WondershotBuilder", "settings.json");
@@ -61,6 +61,7 @@ public partial class MainWindow : Window
             if (File.Exists(SettingsPath) && JsonSerializer.Deserialize<Settings>(File.ReadAllText(SettingsPath)) is { } s)
             {
                 if (!string.IsNullOrWhiteSpace(s.Out)) outDir = s.Out;
+                if (s.Copy) FilesCopy.IsChecked = true;
                 if (!string.IsNullOrWhiteSpace(s.Game) && (Directory.Exists(s.Game) || File.Exists(s.Game))) game = s.Game;
             }
         }
@@ -189,7 +190,7 @@ public partial class MainWindow : Window
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
-            File.WriteAllText(SettingsPath, JsonSerializer.Serialize(new Settings(game, outDir)));
+            File.WriteAllText(SettingsPath, JsonSerializer.Serialize(new Settings(game, outDir, FilesCopy.IsChecked == true)));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         log.Clear();
@@ -203,7 +204,7 @@ public partial class MainWindow : Window
         steps[1].State = 1; steps[1].Sub = "Starting…"; steps[2].State = 0; steps[3].State = 0;
         building = true;
         Page("build");
-        var mine = runner = new Runner(tools, new[] { "--game", game, "--out", outDir }.Concat(extra));
+        var mine = runner = new Runner(tools, new[] { "--game", game, "--out", outDir, "--game-files", FilesCopy.IsChecked == true ? "copy" : "link" }.Concat(extra));
         mine.Line += line => Dispatcher.BeginInvoke(() => OnLine(line));
         mine.Finished += why => Dispatcher.BeginInvoke(() => OnFinished(why));
         mine.Start();
@@ -226,6 +227,7 @@ public partial class MainWindow : Window
                 "dump" => "Reading your game's files. They stay on your PC.",
                 "lift" => "Translating the game's code. This is the long part.",
                 "compile" => "Compiling it for your PC.",
+                "files" => "Copying your game's romfs and dlc into the folder. A few minutes, and several GB.",
                 "assemble" => "Putting the game folder together.",
                 "hdr" => "Making the HDR shaders from your game: it opens by itself for a moment, then closes.",
                 _ => "",

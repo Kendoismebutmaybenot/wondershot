@@ -4,7 +4,8 @@
 > anywhere, run `WondershotBuilder.exe`, point it at your own game dump (a folder with `exefs` and `romfs`, or the game's `.nup`),
 > press Build, then Play. The first build fetches the compiler and libraries once (about 230 MB, each checked against
 > `tools.lock`), recompiles the game on your PC and sets the folder up; it takes a while and wants a fair amount of RAM. When a
-> newer Wondershot release is out, the builder says so and Update downloads it and rebuilds only what changed. The app is
+> newer Wondershot release is out, the builder says so and Update downloads it and rebuilds only what changed. Your game's files can
+> stay where they are (the game folder links to them) or be copied into the game folder, which then stands alone; the builder asks. The app is
 > `builder/WondershotBuilder` (WPF, .NET 8); `scripts/wonder_builder_package.py` makes its folder and zip.
 
 Wondershot is a static recompilation of **Super Mario Bros. Wonder – Nintendo Switch 2 Edition** for PC, built on
