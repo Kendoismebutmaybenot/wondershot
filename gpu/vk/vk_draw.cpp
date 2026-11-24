@@ -678,6 +678,8 @@ void ensure_layout(Program& p) {
     for (const Stage& st : p.stages) p.uses_push |= st.info.uses_global_memory;
     for (const Stage& st : p.stages) p.uses_push |= (st.vk_stage & VK_SHADER_STAGE_TASK_BIT_EXT) != 0;   // (its first workgroup)
     if (p.fallback) p.uses_push = true;   // (its records' and payloads' addresses)
+    if (p.hdr_push) p.uses_push = true;   // (Wonder HDR: the shader_overrides/hdr/ programs read the grading words, which the
+                                          // translated program's info knows nothing of: pushed nothing, they read zeros, grading off and clamped)
     std::atomic_thread_fence(std::memory_order_release);   // (the layout last: a thread that sees it sees the rest)
     p.layout = layout;
 }
