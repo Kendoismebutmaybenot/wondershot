@@ -36,8 +36,7 @@ of this, but check `git status` before you commit. If you aren't sure whether a 
 - **A performance change shows its measured gain** against `main`.
 - **Vendor SDKs are never committed, bundled or uploaded**: NVIDIA's DLSS SDK, AMD's FSR runtime, Intel's `libxess.dll`.
 - **Only code you can license under the GPL** ([Licensing](#licensing)).
-- **AI-assisted changes are welcome**, as the project itself uses them (see the README). Say so in the pull request, and read
-  and test every line you send.
+- **AI-assisted changes are welcome**, as the project itself uses them (see the README). Read and test every line you send.
 
 ## Get started
 
