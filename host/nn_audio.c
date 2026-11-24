@@ -63,6 +63,7 @@ typedef struct { uint64_t buffer, size; int32_t start, end; int loop; uint64_t c
 
 typedef struct {
     int used, released, final_mix, buffers;    /* (released: by the game, until the next update applies it) */
+    int dormant;                               /* (released and applied, but the slot kept for the game's handle: see mix_index) */
     float volume;
     int dest_kind, dest;                       /* (sub mixes) */
     float to[MAX_BUF][MAX_BUF];                /* [src buffer][dst buffer] volume to the destination mix */
@@ -153,9 +154,25 @@ static Voice *voice_of(uint64_t obj) {
     const int i = voice_index(obj);
     return i >= 0 ? &voices[i] : NULL;
 }
+/* (Wonder) At a scene change (the hub) the game's audio-object pool releases all 14 sub mixes, then goes on using the same
+   SubMixType objects - their volumes, destinations and the splitters into them - without acquiring them again (the
+   handle is still in the object). Dropping them silenced the whole game for good. A released mix keeps its slot
+   (dormant) and the game's next use of its handle brings it back; a release not yet applied is cancelled. */
 static int mix_index(uint64_t obj) {
     const int i = get_handle(obj, K_MIX);
-    return i >= 0 && i < MAX_MIXES && mixes[i].used && !mixes[i].released ? i : -1;
+    if (i < 0 || i >= MAX_MIXES) return -1;
+    Mix *m = &mixes[i];
+    if (m->dormant || (m->used && m->released)) {
+        static int told;
+        if (told++ < 16) hos_log("audio: mix %d used again after its release: kept", i);
+        if (m->dormant) {
+            for (int k = 0; k < MAX_BUF; k++) memset(m->buf[k], 0, sizeof m->buf[k]);
+            m->dormant = 0;
+        }
+        m->used = 1;
+        m->released = 0;
+    }
+    return m->used ? i : -1;
 }
 static Mix *mix_of(uint64_t obj) {
     const int i = mix_index(obj);
@@ -1349,7 +1366,10 @@ static void apply(const Cmd *k) {   /* (with the lock held) */
         if (!m->used) return;
         switch (k->op) {
         case OP_MIX_RELEASE:
+            if (!m->released) break;   /* (used again since: kept) */
             m->used = 0;
+            m->released = 0;
+            m->dormant = 1;
             if (sink_mix == k->idx) sink_mix = -1;
             for (int e = 0; e < MAX_EFFECTS; e++)
                 if (auxes[e].used && auxes[e].mix == k->idx) auxes[e].mix = -1;
@@ -1504,6 +1524,7 @@ static uint64_t renderer_event;
 static volatile int renderer_running;
 static volatile int64_t elapsed_frames;
 static HANDLE renderer_thread;
+static volatile unsigned update_calls;   /* (RequestUpdateAudioRenderer calls: the heartbeat shows whether the game still feeds the renderer) */
 
 /* ---- output streams (Switch 2 SDK) ---------------------------------------------------------------------------------- */
 /* nn::audio::OutputStream: the game mixes its own PCM and writes it (Wonder's music and sound effects go this way; only a few
@@ -1552,9 +1573,8 @@ static int stream_open(Ctx *c, uint64_t type, uint64_t event, uint64_t format_ad
     s->capacity = capacity > 0 && capacity < STREAM_RING ? capacity : STREAM_RING / 2;
     au_unlock();
     if (event) hos_system_event_init(event, 1);
-    hos_log("audio: output stream %llx: format %d, %d channels, %d Hz, capacity %d frames", (unsigned long long)type, s->format,
-            s->channels, s->rate, s->capacity);
-    (void)c;
+    hos_log("audio: output stream %llx: format %d, %d channels, %d Hz, capacity %d frames (lr %llx)", (unsigned long long)type,
+            s->format, s->channels, s->rate, s->capacity, (unsigned long long)c->x[30]);
     return 0;
 }
 /* Open(type, event, buffer, size, name, format, capacity frames, latency frames[, flags]) and the forms without an event */
@@ -1571,12 +1591,14 @@ HLE(_ZN2nn5audio16OpenOutputStreamEPNS0_16OutputStreamTypeEPvmRKNS0_15AudioDevic
     RET(stream_open(c, ARG(0), 0, ARG(4), (int)ARG(5)));
 }
 HLE(_ZN2nn5audio17CloseOutputStreamEPNS0_16OutputStreamTypeE) {
+    hos_log("audio: CloseOutputStream %llx (lr %llx)", (unsigned long long)ARG(0), (unsigned long long)c->x[30]);
     au_lock();
     OutStream *s = stream_of(ARG(0));
     if (s) s->state = 0;
     au_unlock();
 }
 HLE(_ZN2nn5audio17StartOutputStreamEPNS0_16OutputStreamTypeE) {
+    hos_log("audio: StartOutputStream %llx (lr %llx)", (unsigned long long)ARG(0), (unsigned long long)c->x[30]);
     au_lock();
     OutStream *s = stream_of(ARG(0));
     if (s) s->state = 2;
@@ -1584,6 +1606,7 @@ HLE(_ZN2nn5audio17StartOutputStreamEPNS0_16OutputStreamTypeE) {
     RET(0);
 }
 HLE(_ZN2nn5audio16StopOutputStreamEPNS0_16OutputStreamTypeE) {
+    hos_log("audio: StopOutputStream %llx (lr %llx)", (unsigned long long)ARG(0), (unsigned long long)c->x[30]);
     au_lock();
     OutStream *s = stream_of(ARG(0));
     if (s) s->state = 1;
@@ -1601,6 +1624,7 @@ HLE(_ZN2nn5audio17StopOutputStreamsEPKPNS0_16OutputStreamTypeEi) {
     au_unlock();
 }
 HLE(_ZN2nn5audio17PurgeOutputStreamEPNS0_16OutputStreamTypeE) {
+    hos_log("audio: PurgeOutputStream %llx (lr %llx)", (unsigned long long)ARG(0), (unsigned long long)c->x[30]);
     au_lock();
     OutStream *s = stream_of(ARG(0));
     if (s) s->count = 0, s->frac = 0;
@@ -1685,8 +1709,24 @@ static DWORD WINAPI renderer_main(void *p) {
     static int16_t pcm[FRAME * OUT_MAX_CH];
     float gain = 1.0f, gain_want = 1.0f;
     int gain_frames = 0;
+    uint64_t stat_at = au_ms();
+    unsigned stat_played = 0, stat_peak = 0;
     for (;;) {
         hos_sleep_ns(next - hos_now_ns());
+        if (au_ms() - stat_at >= 5000) {   /* (HOS_AUDIO_TRACE=1: a heartbeat: blocks played, loudest sample, streams, so a silence can be placed) */
+            stat_at = au_ms();
+            int started = 0, filled = 0;
+            for (int i = 0; i < STREAMS; i++) if (streams[i].state == 2) started++, filled += streams[i].count;
+            int vused = 0, vstarted = 0, vbuf = 0, mused = 0;
+            for (int i = 0; i < MAX_VOICES; i++)
+                if (voices[i].used) vused++, vstarted += voices[i].state == PLAY_STARTED, vbuf += voices[i].state == PLAY_STARTED && voices[i].nwb > 0;
+            for (int m = 0; m < MAX_MIXES; m++) mused += mixes[m].used;
+            AUT("audio: stats: running %d, %u blocks in 5 s, peak %u, streams started %d (%d frames queued), elapsed %lld, "
+                    "%u updates, voices %d used %d started %d with buffers, %d mixes",
+                    renderer_running, out_played - stat_played, stat_peak, started, filled, (long long)elapsed_frames,
+                    update_calls, vused, vstarted, vbuf, mused);
+            stat_played = out_played, stat_peak = 0, update_calls = 0;
+        }
         next = audio_mix_deadline(hos_now_ns(), next, period);
         if (!renderer_running) continue;
         output_route_update();
@@ -1699,6 +1739,10 @@ static DWORD WINAPI renderer_main(void *p) {
         gain = audio_apply_gain(pcm, FRAME, out_channels, gain, gain_want);
         int rx_option(int id, int otherwise);
         audio_mono(pcm, FRAME, out_channels, rx_option(HOS_OPT_AUDIO_OUTPUT, 0) == 3);
+        for (int i = 0; i < FRAME * out_channels; i++) {
+            const unsigned a = (unsigned)(pcm[i] < 0 ? -pcm[i] : pcm[i]);
+            if (a > stat_peak) stat_peak = a;
+        }
         output_frame(pcm);
         elapsed_frames++;
         if (renderer_event) hos_system_event_signal(renderer_event);
@@ -1715,13 +1759,26 @@ HLE(_ZN2nn5audio17OpenAudioRendererEPNS0_19AudioRendererHandleEPNS_2os11SystemEv
     au_lock();
     au_unlock();
     if (!renderer_thread) renderer_thread = CreateThread(NULL, 0, renderer_main, NULL, 0, NULL);
-    hos_log("audio: renderer opened");
+    hos_log("audio: renderer opened (lr %llx)", (unsigned long long)c->x[30]);
     RET(0);
 }
-HLE(_ZN2nn5audio18StartAudioRendererENS0_19AudioRendererHandleE) { renderer_running = 1; RET(0); }
-HLE(_ZN2nn5audio17StopAudioRendererENS0_19AudioRendererHandleE) { renderer_running = 0; }
-HLE(_ZN2nn5audio18CloseAudioRendererENS0_19AudioRendererHandleE) { renderer_running = 0; renderer_event = 0; dump_finish(); }
+HLE(_ZN2nn5audio18StartAudioRendererENS0_19AudioRendererHandleE) {
+    hos_log("audio: StartAudioRenderer (lr %llx)", (unsigned long long)c->x[30]);
+    renderer_running = 1;
+    RET(0);
+}
+HLE(_ZN2nn5audio17StopAudioRendererENS0_19AudioRendererHandleE) {
+    hos_log("audio: StopAudioRenderer (lr %llx)", (unsigned long long)c->x[30]);
+    renderer_running = 0;
+}
+HLE(_ZN2nn5audio18CloseAudioRendererENS0_19AudioRendererHandleE) {
+    hos_log("audio: CloseAudioRenderer (lr %llx)", (unsigned long long)c->x[30]);
+    renderer_running = 0;
+    renderer_event = 0;
+    dump_finish();
+}
 HLE(_ZN2nn5audio26RequestUpdateAudioRendererENS0_19AudioRendererHandleEPKNS0_19AudioRendererConfigE) {
+    update_calls++;
     au_lock();
     commit();
     last_update_ns = hos_now_ns();
@@ -1832,7 +1889,7 @@ HLE(_ZN2nn5audio17GetMemoryPoolSizeEPKNS0_14MemoryPoolTypeE) {
 static int new_mix(uint64_t obj, int final_mix, int buffers) {
     au_lock();
     int i = 0;
-    while (i < MAX_MIXES && mixes[i].used) i++;
+    while (i < MAX_MIXES && (mixes[i].used || mixes[i].dormant)) i++;
     if (i == MAX_MIXES) { au_unlock(); return 0; }
     memset(&mixes[i], 0, sizeof mixes[i]);
     mixes[i].used = 1;
@@ -1848,9 +1905,10 @@ static int new_mix(uint64_t obj, int final_mix, int buffers) {
 HLE(_ZN2nn5audio15AcquireFinalMixEPNS0_19AudioRendererConfigEPNS0_12FinalMixTypeEi) { RET(new_mix(ARG(1), 1, (int)ARG(2))); }
 /* AcquireSubMix(config, SubMixType*, int sampleRate, int bufferCount) */
 HLE(_ZN2nn5audio13AcquireSubMixEPNS0_19AudioRendererConfigEPNS0_10SubMixTypeEii) { RET(new_mix(ARG(1), 0, (int)ARG(3))); }
-static void release_mix(uint64_t obj) {
+static void release_mix(Ctx *c, uint64_t obj) {
     au_lock();
     Mix *m = mix_of(obj);
+    AUT("audio: release mix %d at %#llx (lr %#llx)", m ? (int)(m - mixes) : -1, (unsigned long long)obj, (unsigned long long)c->x[30]);
     if (m) {
         m->released = 1;
         const Cmd k = {.op = OP_MIX_RELEASE, .idx = (int)(m - mixes)};
@@ -1858,8 +1916,8 @@ static void release_mix(uint64_t obj) {
     }
     au_unlock();
 }
-HLE(_ZN2nn5audio15ReleaseFinalMixEPNS0_19AudioRendererConfigEPNS0_12FinalMixTypeE) { release_mix(ARG(1)); }
-HLE(_ZN2nn5audio13ReleaseSubMixEPNS0_19AudioRendererConfigEPNS0_10SubMixTypeE) { release_mix(ARG(1)); }
+HLE(_ZN2nn5audio15ReleaseFinalMixEPNS0_19AudioRendererConfigEPNS0_12FinalMixTypeE) { release_mix(c, ARG(1)); }
+HLE(_ZN2nn5audio13ReleaseSubMixEPNS0_19AudioRendererConfigEPNS0_10SubMixTypeE) { release_mix(c, ARG(1)); }
 static void set_mix_volume(Ctx *c) {
     au_lock();
     if (mix_of(ARG(0))) {
@@ -1870,6 +1928,13 @@ static void set_mix_volume(Ctx *c) {
 }
 HLE(_ZN2nn5audio17SetFinalMixVolumeEPNS0_12FinalMixTypeEf) { set_mix_volume(c); }
 HLE(_ZN2nn5audio15SetSubMixVolumeEPNS0_10SubMixTypeEf) {
+    {   /* (a sub mix the host does not know: what its first word holds, and who asks) */
+        static int told;
+        if (mix_index(ARG(0)) < 0 && told++ < 16)
+            AUT("audio: unknown sub mix %#llx: word0 %#llx word1 %#llx (lr %#llx)", (unsigned long long)ARG(0),
+                    (unsigned long long)(ARG(0) ? G64(ARG(0)) : 0), (unsigned long long)(ARG(0) ? G64(ARG(0) + 8) : 0),
+                    (unsigned long long)c->x[30]);
+    }
     AUT("audio: sub mix %d volume %.3f", mix_index(ARG(0)), farg(c, 0));
     set_mix_volume(c);
 }
@@ -2330,6 +2395,79 @@ HLE(_ZN2nn5audio25SetLightLimiterOutputGainEPNS0_16LightLimiterTypeEf) { lim_out
 HLE(_ZN2nn5audio24SetLightLimiterThresholdEPNS0_16LightLimiterTypeEf) { lim_threshold = farg(c, 0); AUT("audio: limiter threshold %.3f", lim_threshold); }
 HLE(_ZN2nn5audio22SetLightLimiterEnabledEPNS0_16LightLimiterTypeEb) { lim_enabled = (int)(ARG(1) & 1); AUT("audio: limiter %s", lim_enabled ? "on" : "off"); }
 HLE(_ZN2nn5audio21IsLightLimiterEnabledEPKNS0_16LightLimiterTypeE) { RET(lim_enabled); }
+
+/* ---- Add/Remove of the biquad filter and the light limiter ------------------------------------------------------------
+   Wonder removes the effects it put on its mixes and adds new ones whenever the scene changes (the hub, a course). The
+   console's Remove returns the work buffer the Add was given, which the game frees or reuses for the next graph; these
+   were stubs returning 0 (a null buffer), and after the hub's teardown the game never rebuilt its sub mixes: 15 mixes
+   became 1, the voices sent to splitters with no destination and the whole game went silent. Tracked per object address:
+   the buffer, and the biquad's enabled flag (the filter itself is not mixed). */
+#define FX_TRACK 16
+typedef struct { uint64_t obj, buffer, lookahead; int enabled; } FxTrack;
+static FxTrack bq_track[FX_TRACK], lim_track[FX_TRACK];
+static FxTrack *fx_find(FxTrack *t, uint64_t obj, int create) {   /* (with the lock held) */
+    FxTrack *free_slot = NULL;
+    for (int i = 0; i < FX_TRACK; i++) {
+        if (t[i].obj == obj) return &t[i];
+        if (!t[i].obj && !free_slot) free_slot = &t[i];
+    }
+    if (create && free_slot) { memset(free_slot, 0, sizeof *free_slot); free_slot->obj = obj; return free_slot; }
+    return NULL;
+}
+HLE(_ZN2nn5audio15AddBiquadFilterEPNS0_19AudioRendererConfigEPNS0_16BiquadFilterTypeEPNS0_10SubMixTypeE) {
+    au_lock();
+    fx_find(bq_track, ARG(1), 1);
+    au_unlock();
+    AUT("audio: biquad filter added at %#llx", (unsigned long long)ARG(1));
+    RET(0);
+}
+HLE(_ZN2nn5audio18RemoveBiquadFilterEPNS0_19AudioRendererConfigEPNS0_16BiquadFilterTypeEPNS0_10SubMixTypeE) {
+    au_lock();
+    FxTrack *f = fx_find(bq_track, ARG(1), 0);
+    if (f) f->obj = 0;
+    au_unlock();
+    AUT("audio: biquad filter removed at %#llx", (unsigned long long)ARG(1));
+    RET(0);
+}
+HLE(_ZN2nn5audio22SetBiquadFilterEnabledEPNS0_16BiquadFilterTypeEb) {
+    au_lock();
+    FxTrack *f = fx_find(bq_track, ARG(0), 1);
+    if (f) f->enabled = (int)(ARG(1) & 1);
+    au_unlock();
+}
+HLE(_ZN2nn5audio21IsBiquadFilterEnabledEPKNS0_16BiquadFilterTypeE) {
+    au_lock();
+    const FxTrack *f = fx_find(bq_track, ARG(0), 0);
+    const int on = f ? f->enabled : 0;
+    au_unlock();
+    RET(on);
+}
+/* AddLightLimiter(config, limiter, buffer, size, FinalMixType*, lookAhead TimeSpan, channels) */
+HLE(_ZN2nn5audio15AddLightLimiterEPNS0_19AudioRendererConfigEPNS0_16LightLimiterTypeEPvmPNS0_12FinalMixTypeENS_8TimeSpanEi) {
+    au_lock();
+    FxTrack *f = fx_find(lim_track, ARG(1), 1);
+    if (f) f->buffer = ARG(2), f->lookahead = ARG(5);
+    au_unlock();
+    AUT("audio: light limiter added at %#llx, buffer %#llx", (unsigned long long)ARG(1), (unsigned long long)ARG(2));
+    RET(0);
+}
+/* RemoveLightLimiter(config, limiter, FinalMixType*) -> the work buffer */
+HLE(_ZN2nn5audio18RemoveLightLimiterEPNS0_19AudioRendererConfigEPNS0_16LightLimiterTypeEPNS0_12FinalMixTypeE) {
+    au_lock();
+    FxTrack *f = fx_find(lim_track, ARG(1), 0);
+    const uint64_t buffer = f ? f->buffer : 0;
+    if (f) f->obj = 0;
+    au_unlock();
+    AUT("audio: light limiter removed at %#llx, buffer %#llx", (unsigned long long)ARG(1), (unsigned long long)buffer);
+    RET(buffer);
+}
+HLE(_ZN2nn5audio28GetLightLimiterLookAheadTimeEPKNS0_16LightLimiterTypeE) {
+    au_lock();
+    const FxTrack *f = fx_find(lim_track, ARG(0), 0);
+    const uint64_t t = f ? f->lookahead : 0;
+    au_unlock();
+    RET(t);
+}
 
 /* ---- I3DL2 reverb: AddI3dl2Reverb(config, I3dl2ReverbType*, buffer, size, SubMixType* / FinalMixType*, channels) - */
 static Reverb *reverb_of(uint64_t obj) {
