@@ -4137,6 +4137,7 @@ double menu_target_ms() { return fps_target_ms(); }   // (the performance summar
 int menu_fps_cap() { return fps_cap_now(); }          // (likewise: its fps_cap label)
 bool scene_tonemap_on() { return dev.hdr && opts.hdr == 2 && opts.hdr_tonemap == 1; }
 bool wonder_hdr_on() { return dev.hdr && opts.hdr == 2; }
+bool menu_hdr_on() { return opts.hdr != 0; }
 // (the tools off on the Debug tab: flight, the free camera and heart protection put away; -1, heart protection never set, is the
 // host's own HOS_OOT_PROTECT_HEARTS)
 int menu_heart_protection() {

@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+namespace mkwvk { bool menu_hdr_on(); }   // (vk_menu.cpp: the HDR row on, Wondershot)
 namespace mkwvk::menu {
 
 namespace {
@@ -586,10 +587,24 @@ PageBuilder& PageBuilder::row(Setting s, Place p) {
             "hud_buttons_scale", "hud_minimap_x", "hud_minimap_y", "hud_minimap_scale", "reset_hud_placement",
             "@Motion", "motion_controls", "motion_sensitivity_x", "motion_sensitivity_y", "invert_motion_x", "invert_motion_y",
             "motion_deadzone", "shadow_resolution", "discord_status", "bug_report",
-            "audio_output"};   // (Speaker layout: Wonder is stereo only, host/nn_audio.c au_speakers)
+            "audio_output",    // (Speaker layout: Wonder is stereo only, host/nn_audio.c au_speakers)
+            // (Wondershot, 2026-11-24: rows with no effect in Wonder) the button prompt faces (the game's icons come from the
+            // system font: until the stand-in font lands), OoT's debug cheats, the microphone (Wonder has no voice input),
+            // the temporal upscaler (it hooks OoT's own anti-aliasing pass: no DLSS feature is ever made here) and the aspect
+            // ratio (Wonder has no widescreen patch: anything but 16:9 only stretches)
+            "button_prompts", "debug_tools", "autosave:", "damage_taken", "microphone", "microphone_gain", "test_microphone",
+            "dlss", "dlss_model", "dlss_pre_bloom", "resolution", "ultrawide"};
         if (s.key)
             for (const char* k : not_in_wonder)
                 if (!strcmp(s.key, k)) return *this;
+        // (Wondershot) rows of the 8-bit scale pass, which HDR skips (it would clip the highlights): hidden while HDR is on
+        static const char* const not_with_hdr[] = {"sharpness", "crt_filter", "crt_lines", "upscaling"};
+        if (s.key)
+            for (const char* k : not_with_hdr)
+                if (!strcmp(s.key, k)) {
+                    auto was = s.shown;
+                    s.shown = [was] { return !mkwvk::menu_hdr_on() && (!was || was()); };
+                }
     }
     if (s.kind == Kind::Toggle) s.lo = 0, s.hi = 1;
     if (!s.choices.empty()) s.hi = s.lo + (int)s.choices.size() - 1;
