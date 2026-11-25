@@ -733,6 +733,7 @@ def junction(link, target):
         else:
             return False
     r = subprocess.run(["cmd", "/c", "mklink", "/J", link, target], capture_output=True, text=True,
+                       encoding="oem", errors="replace",   # (mklink speaks the console's OEM code page, not UTF-8)
                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     return r.returncode == 0
 

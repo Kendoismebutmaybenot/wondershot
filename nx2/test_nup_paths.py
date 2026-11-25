@@ -191,7 +191,7 @@ class ExtractionPaths(unittest.TestCase):
                 raise
             # Junctions need no Developer Mode or symbolic-link privilege on Windows.
             result = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)],
-                                    capture_output=True, text=True)
+                                    capture_output=True, text=True, encoding="oem", errors="replace")
             if result.returncode:
                 self.fail("Cannot create the link fixture: %s; %s" % (error, result.stderr))
 
@@ -340,7 +340,7 @@ class ExtractionPaths(unittest.TestCase):
         link = self.out / "romfs"
         if os.name == "nt":
             result = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)],
-                                    capture_output=True, text=True)
+                                    capture_output=True, text=True, encoding="oem", errors="replace")
             self.assertEqual(result.returncode, 0, result.stderr)
         else:
             os.symlink(outside, link, target_is_directory=True)
@@ -391,7 +391,7 @@ class ExtractionPaths(unittest.TestCase):
         link = self.out / "exefs"
         if os.name == "nt":
             result = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)],
-                                    capture_output=True, text=True)
+                                    capture_output=True, text=True, encoding="oem", errors="replace")
             self.assertEqual(result.returncode, 0, result.stderr)
         else:
             os.symlink(outside, link, target_is_directory=True)
