@@ -17,7 +17,8 @@ The steps are the ones the author ran by hand: the build tools (tools.lock: the 
 translation of its code (nx2/lift.py), the compile (nx2/build.py), and the game folder put together. Lines the app reads, each on its
 own line of stdout:
 
-    @@stage <id> <text>      a step begins: tools, dump, lift, compile, files (copy mode), assemble, hdr, finish
+    @@stage <id> <text>      a step begins: tools, dump, lift, compile, files (copy mode), layer (an add-on put over
+                             the romfs), assemble, hdr, finish
     @@progress <0..1>        how far the whole build is
     @@eta <seconds>          the compile's time left
     @@check <ok|bad> <text>  (--check) the answer
@@ -49,7 +50,7 @@ SUPPORTED_BUILD = "ec47e6f8"
 
 # the share of the whole build each step is, for the bar
 SPAN = {"update": (0.00, 0.03), "tools": (0.03, 0.07), "dump": (0.07, 0.13), "lift": (0.13, 0.30), "compile": (0.30, 0.90),
-        "files": (0.90, 0.94), "assemble": (0.94, 0.955), "hdr": (0.955, 0.995)}
+        "files": (0.90, 0.92), "layer": (0.92, 0.94), "assemble": (0.94, 0.955), "hdr": (0.955, 0.995)}
 LIFT_STEPS = 7   # (nx2/lift.py's "lift: <step> in <s>" lines)
 
 
@@ -112,14 +113,29 @@ def dump_folders(game):
     return (exefs if os.path.isdir(exefs) else None, romfs if os.path.isdir(romfs) else None, dlc if os.path.isdir(dlc) else None)
 
 
-def romfs_boot_error(romfs):
+HEAP_DEFS = ("Product.Nin_Ounce_NVN2.HeapDef.byml.zs", "Default.Nin_Ounce_NVN2.HeapDef.byml.zs")
+
+
+def has_heap_def(romfs):
     """The game needs its Switch 2 heap sizes to finish starting."""
     heap_dir = os.path.join(romfs, "System", "HeapSize")
-    names = ("Product.Nin_Ounce_NVN2.HeapDef.byml.zs", "Default.Nin_Ounce_NVN2.HeapDef.byml.zs")
-    if not any(os.path.isfile(lp(os.path.join(heap_dir, name))) for name in names):
-        return ("This RomFS is missing the Switch 2 heap definition (System/HeapSize/%s or %s). "
-                "Wondershot cannot start without it. Select a complete Switch 2 Edition dump or its .nup." % names)
-    return None
+    return any(os.path.isfile(lp(os.path.join(heap_dir, name))) for name in HEAP_DEFS)
+
+
+def needs_layering(romfs, dlc):
+    """A dump unpacked title by title: romfs is the Switch 1 game's, and the Switch 2 Edition's own files (its heap definition,
+    the Nin_Ounce_NVN2 assets, newer copies of many others) are in the add-on 010015100B515001, which says so with
+    System/AocUpgradeVersion.txt. A .nup's romfs has the add-on over the game's files already; for this layout the build puts it
+    over them in the game folder (layer_romfs). The player's dump is never written."""
+    return (bool(dlc) and not has_heap_def(romfs) and has_heap_def(dlc)
+            and os.path.isfile(lp(os.path.join(dlc, "System", "AocUpgradeVersion.txt"))))
+
+
+def romfs_boot_error(romfs, dlc=None):
+    if has_heap_def(romfs) or needs_layering(romfs, dlc):
+        return None
+    return ("This RomFS is missing the Switch 2 heap definition (System/HeapSize/%s or %s). "
+            "Wondershot cannot start without it. Select a complete Switch 2 Edition dump or its .nup." % HEAP_DEFS)
 
 
 def check(game, work, tools):
@@ -140,11 +156,13 @@ def check(game, work, tools):
         if not bid.startswith(SUPPORTED_BUILD):
             say("@@check", "bad", "This is build %s. Wondershot is made for build %s of the Switch 2 Edition." % (bid[:8], SUPPORTED_BUILD))
             return
-        error = romfs_boot_error(romfs)
+        error = romfs_boot_error(romfs, dlc)
         if error:
             say("@@check", "bad", error)
             return
         extra = " With the Rosalina and Bellabel Park content." if dlc else " Without the Rosalina and Bellabel Park content (no dlc\\romfs)."
+        if needs_layering(romfs, dlc):
+            extra += " The Switch 2 Edition's files are in the add-on: the build puts them over the romfs in the game folder."
         say("@@check", "ok", "Super Mario Bros. Wonder – Nintendo Switch 2 Edition, build %s.%s" % (bid[:8], extra))
         return
     if not os.path.isfile(game) or not game.lower().endswith(".nup"):
@@ -573,13 +591,18 @@ def build(game, out, work, tools, jobs, update=None, files="link"):
     bid = module_id(os.path.join(exefs, "main")) or ""
     if not bid.startswith(SUPPORTED_BUILD):
         fail("This is build %s of the game. Wondershot is made for build %s." % (bid[:8], SUPPORTED_BUILD))
-    error = romfs_boot_error(romfs)
+    error = romfs_boot_error(romfs, dlc)
     if error:
         fail(error)
+    layered = needs_layering(romfs, dlc)
+    if layered:
+        say("the romfs has no Switch 2 heap definition and the add-on has the Switch 2 Edition's files: they go over it")
     progress("dump", 1.0)
-    pairs = [(src, os.path.join(out, name)) for name, src in (("romfs", romfs), ("dlc", dlc)) if src]
-    if files == "copy":
-        check_space(out, pairs)
+    pairs = [(src, os.path.join(out, name)) for name, src in (("romfs", romfs), ("dlc", dlc))
+             if src and not (layered and name == "romfs")]
+    if files == "copy" or layered:
+        check_space(out, pairs if files == "copy" else [],
+                    layer_space(os.path.join(out, "romfs"), romfs, dlc, files) if layered else 0)
 
     env = tool_env(tools, work, exefs, romfs)
     os.makedirs(work, exist_ok=True)
@@ -618,7 +641,10 @@ def build(game, out, work, tools, jobs, update=None, files="link"):
     if files == "copy":
         stage("files", "Copying your game's files into the folder")
         copy_game_files(out, pairs)
-    assemble(out, work, tools, dlc, romfs, exefs, files)
+    if layered:
+        stage("layer", "Putting the Switch 2 Edition's files over your romfs")
+        layer_romfs(os.path.join(out, "romfs"), romfs, dlc, link=files != "copy")
+    assemble(out, work, tools, dlc, romfs, exefs, files, layered)
     make_hdr(out, tools)
     stage("finish", "All set")
     say("@@progress", "1")
@@ -674,20 +700,109 @@ def copy_plan(src, dst):
     return todo
 
 
-def free_bytes(path):
-    """The free space of the drive path is (or would be) on"""
+def existing_parent(path):
+    """path, or the nearest folder above it that is there"""
     path = os.path.abspath(path)
     while path and not os.path.exists(path):
         parent = os.path.dirname(path)
         if parent == path:
             break
         path = parent
-    return shutil.disk_usage(path).free
+    return path
 
 
-def check_space(out, pairs):
-    """Stops before the long steps when copying the game's files would not fit: [(source, its place in the folder)]"""
-    need = sum(size for src, dst in pairs for _, _, size in copy_plan(src, dst))
+def free_bytes(path):
+    """The free space of the drive path is (or would be) on"""
+    return shutil.disk_usage(existing_parent(path)).free
+
+
+def layer_plan(base, addon):
+    """{place in the romfs: source file} of base with the add-on over it: where both have a file, the add-on's copy is the one"""
+    plan = {}
+    for root in (base, addon):
+        top = lp(root)
+        for folder, _, names in os.walk(top):
+            rel = os.path.relpath(folder, top)
+            for n in names:
+                plan[n if rel == "." else os.path.join(rel, n)] = os.path.join(folder, n)
+    return plan
+
+
+def can_hard_link(dst, *sources):
+    try:
+        dev = os.stat(existing_parent(dst)).st_dev
+        return all(os.stat(src).st_dev == dev for src in sources)
+    except OSError:
+        return False
+
+
+def layer_space(dst, base, addon, files):
+    """Bytes layer_romfs may write: none when it hard-links (link mode, the dump on the game folder's drive)"""
+    if files != "copy" and can_hard_link(dst, base, addon):
+        return 0
+    total = 0
+    for src in layer_plan(base, addon).values():
+        try:
+            total += os.stat(src).st_size
+        except OSError:
+            pass
+    return total
+
+
+def layer_romfs(dst, base, addon, link=True):
+    """The game folder's romfs as a real folder: base (the Switch 1 game's romfs) with the add-on's files over it, as a .nup's
+    romfs is. link: each file a hard link to the dump's own (no space, read in place), copied when it cannot be (another drive);
+    otherwise copied. A file already there and the same is kept, so a build again only does what changed; files an earlier
+    build left that are no longer in it go. Nothing of the dump is written: a link is only removed, never written through."""
+    if os.path.lexists(dst) and is_link(dst):
+        os.rmdir(dst)   # (a junction of an earlier build: only the link goes)
+    plan = layer_plan(base, addon)
+    top = lp(dst)
+    os.makedirs(top, exist_ok=True)
+    for folder, _, names in os.walk(top):
+        rel = os.path.relpath(folder, top)
+        for n in names:
+            if (n if rel == "." else os.path.join(rel, n)) not in plan:
+                os.remove(os.path.join(folder, n))
+    stats = {rel: os.stat(src) for rel, src in plan.items()}
+    total = sum(st.st_size for st in stats.values()) or 1
+    done = last = linked = copied = 0
+    for rel, src in plan.items():
+        t = os.path.join(top, rel)
+        st = stats[rel]
+        try:
+            ts = os.stat(t)
+        except OSError:
+            ts = None
+        if ts is None or not (os.path.samestat(st, ts) or (ts.st_size == st.st_size and ts.st_mtime >= st.st_mtime - 2)):
+            os.makedirs(os.path.dirname(t), exist_ok=True)
+            if ts is not None:
+                os.remove(t)
+            try:
+                if not link:
+                    raise OSError("copy mode")
+                os.link(src, t)
+                linked += 1
+            except OSError:
+                shutil.copyfile(src, t + ".part")
+                os.replace(t + ".part", t)
+                try:
+                    shutil.copystat(src, t)
+                except OSError:
+                    pass
+                copied += 1
+        done += st.st_size
+        if done - last >= (256 << 20) or done == total:
+            last = done
+            progress("layer", done / total)
+    say("romfs: %d files, the add-on's over the game's (%d linked, %d copied, the rest kept)" % (len(plan), linked, copied))
+    progress("layer", 1.0)
+
+
+def check_space(out, pairs, extra=0):
+    """Stops before the long steps when copying the game's files would not fit: [(source, its place in the folder)], and extra
+    bytes more (the romfs layer_romfs makes)"""
+    need = extra + sum(size for src, dst in pairs for _, _, size in copy_plan(src, dst))
     free = free_bytes(out)
     if need + (1 << 30) > free:
         fail("Copying your game's files into %s needs about %.1f GB, and %.1f GB are free on that drive. Choose a folder on "
@@ -738,7 +853,7 @@ def junction(link, target):
     return r.returncode == 0
 
 
-def assemble(out, work, tools, dlc, romfs, exefs, files="link"):
+def assemble(out, work, tools, dlc, romfs, exefs, files="link", layered=False):
     os.makedirs(out, exist_ok=True)
     build_dir = os.path.join(work, "sa", "build")
     image = os.path.join(work, "sa", "image", "image.bin")
@@ -760,17 +875,19 @@ def assemble(out, work, tools, dlc, romfs, exefs, files="link"):
                 break
     # the game's files: read where they are (a junction), or already copied into the folder (files == "copy")
     stamp = os.path.join(out, "wondershot_version.txt")
-    copied_before = False
+    copied_before = layered_before = False
     try:
         with open(stamp, encoding="utf-8") as f:
-            copied_before = "files=copy" in f.read().split()
+            words = f.read().split()
+            copied_before, layered_before = "files=copy" in words, "romfs=layered" in words
     except OSError:
         pass
     for name, target in (("romfs", romfs), ("dlc", dlc)):
-        if files == "copy":
+        if files == "copy" or (layered and name == "romfs"):   # (the layered romfs is a real folder made by layer_romfs)
             continue
         link = os.path.join(out, name)
-        if copied_before and os.path.isdir(link) and not is_link(link):   # (our own copy of an earlier build: now to be linked)
+        ours = copied_before or (layered_before and name == "romfs")
+        if ours and os.path.isdir(link) and not is_link(link):   # (our own copy of an earlier build: now to be linked)
             say("the copy of the game's %s is removed: the folder reads your dump in place now" % name)
             shutil.rmtree(lp(link))
         if target is None:
@@ -789,6 +906,8 @@ def assemble(out, work, tools, dlc, romfs, exefs, files="link"):
     # what the builder app reads to say this folder is Wondershot, which release built it, and which game to build again from
     with open(os.path.join(out, "wondershot_version.txt"), "w", encoding="utf-8") as f:
         f.write("version=%s\nbuilt=%s\ngame=%s\nfiles=%s\n" % (installed_version(tools), time.strftime("%Y-%m-%d %H:%M"), GAME_PATH[0], files))
+        if layered:
+            f.write("romfs=layered\n")
 
 
 # ---- HDR: the game's tone mapper and final copy, edited on the player's PC (scripts/renodx_wonder_sw2.py) ----

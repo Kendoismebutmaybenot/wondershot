@@ -334,6 +334,7 @@ public partial class MainWindow : Window
                 "lift" => "Translating the game's code. This is the long part.",
                 "compile" => "Compiling it for your PC.",
                 "files" => "Copying your game's romfs and dlc into the folder. A few minutes, and several GB.",
+                "layer" => "Your dump keeps the Switch 2 Edition's files in its add-on: they go over the romfs in the game folder. Your dump is not changed.",
                 "assemble" => "Putting the game folder together.",
                 "hdr" => "Making the HDR shaders from your game: it opens by itself for a moment, then closes.",
                 _ => "",
