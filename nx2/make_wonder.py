@@ -34,6 +34,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -469,7 +470,7 @@ def download(urls, sha, size, target, progress_cb):
             last = "the file from %s was not the one expected" % url.split("/")[2]
         except OSError as error:
             last = "%s: %s" % (url.split("/")[2], error)
-    fail("A build tool could not be downloaded (%s). Check the internet connection and try again." % last)
+    raise OSError("A build tool could not be downloaded (%s). Check the internet connection and try again." % last)
 
 
 # (a file each tool has once it is there: third_party's folder is also the sources' own, so the folder alone says nothing)
@@ -487,7 +488,10 @@ def ensure_tools(tools):
         say("fetching %s %s (%d MB)" % (name, dest, size // 1000000))
         zpath = os.path.join(tools, dest + ".download.zip")
         base = done
-        download(urls, sha, size, zpath, lambda f: progress("tools", (base + f * size) / total))
+        try:
+            download(urls, sha, size, zpath, lambda f: progress("tools", (base + f * size) / total))
+        except OSError as error:
+            fail(str(error))
         part = os.path.join(tools, dest + ".part")
         shutil.rmtree(part, ignore_errors=True)
         with zipfile.ZipFile(zpath) as z:
@@ -823,24 +827,33 @@ def ensure_shader_tools(tools):
         say("fetching and compiling %s" % SPIRV_CROSS[0])
         z = os.path.join(d, "spirv-cross.download.zip")
         download(SPIRV_CROSS[3], SPIRV_CROSS[1], SPIRV_CROSS[2], z, lambda f: progress("hdr", 0.15 + 0.05 * f))
-        src = os.path.join(d, "spirv-cross-src")
-        shutil.rmtree(src, ignore_errors=True)
-        with zipfile.ZipFile(z) as zz:
-            zz.extractall(src)
-        os.remove(z)
-        top = os.path.join(src, os.listdir(src)[0])
-        for lic in ("LICENSE", "LICENSES"):
-            p = os.path.join(top, lic)
-            if os.path.isfile(p):
-                shutil.copyfile(p, os.path.join(d, "SPIRV-Cross-" + lic + ".txt"))
-        cxx = os.path.join(tools, "llvm-mingw", "bin", "clang++.exe")
-        r = subprocess.run([cxx, "-std=c++17", "-O1", "-static", "-o", cross + ".part"]
-                           + [os.path.join(top, n + ".cpp") for n in SPIRV_CROSS_SOURCES],
-                           capture_output=True, text=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        shutil.rmtree(src, ignore_errors=True)
-        if r.returncode != 0:
-            raise HdrSkipped("SPIRV-Cross did not compile: %s" % (r.stderr.strip().splitlines() or ["?"])[-1])
-        os.replace(cross + ".part", cross)
+        sources = [name + ".cpp" for name in SPIRV_CROSS_SOURCES]
+        licenses = ("LICENSE", "LICENSES")
+        with tempfile.TemporaryDirectory(prefix="sc-", dir=d) as src:
+            # Only extract the CLI sources and their headers. The archive's
+            # versioned folder and nested test fixtures can exceed MAX_PATH.
+            with zipfile.ZipFile(z) as archive:
+                for member in archive.infolist():
+                    parts = member.filename.split("/")
+                    if len(parts) != 2 or member.is_dir():
+                        continue
+                    name = parts[1]
+                    if name not in sources and name not in licenses and not name.endswith((".h", ".hpp")):
+                        continue
+                    with archive.open(member) as packed, open(lp(os.path.join(src, name)), "wb") as unpacked:
+                        shutil.copyfileobj(packed, unpacked)
+            os.remove(z)
+            cxx = os.path.abspath(os.path.join(tools, "llvm-mingw", "bin", "clang++.exe"))
+            r = subprocess.run([cxx, "-std=c++17", "-O1", "-static", "-o", "spirv-cross.exe"] + sources,
+                               cwd=src, capture_output=True, text=True,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            if r.returncode != 0:
+                raise HdrSkipped("SPIRV-Cross did not compile: %s" % (r.stderr.strip().splitlines() or ["?"])[-1])
+            for lic in licenses:
+                p = os.path.join(src, lic)
+                if os.path.isfile(lp(p)):
+                    shutil.copyfile(lp(p), lp(os.path.join(d, "SPIRV-Cross-" + lic + ".txt")))
+            os.replace(lp(os.path.join(src, "spirv-cross.exe")), lp(cross))
     progress("hdr", 0.25)
     return d
 
@@ -911,9 +924,8 @@ def make_hdr(out, tools):
         if r.returncode != 0:
             raise HdrSkipped("the HDR edit stopped: %s" % ((r.stderr or r.stdout).strip().splitlines() or ["?"])[-1])
         say("HDR shaders made: shader_overrides\\hdr")
-    except HdrSkipped as why:
-        say("the HDR shaders could not be made (%s): the game plays, without its HDR highlights. Build again to retry." % why)
-        say("@@warn", "The HDR shaders could not be made (%s). Wondershot plays, but without its HDR highlights. Press Build again to retry." % why)
+    except (HdrSkipped, OSError, zipfile.BadZipFile, subprocess.TimeoutExpired) as why:
+        say("@@warn", "The game build is complete. The HDR shaders could not be made (%s). Press Build again to retry." % why)
     finally:
         for p in dumps.values():   # (the game's own code: not left lying in the folder)
             if os.path.exists(p):
