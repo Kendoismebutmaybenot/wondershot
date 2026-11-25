@@ -5,6 +5,7 @@
 #include "../gpu/vk/vk_api.h"   /* (HOS_OPT_HDR_*, HOS_OPT_CAMERA_SPEED: the Insert menu's HDR and Camera speed, answered by the renderer) */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -489,6 +490,75 @@ void hos_wonder_seed_contact(Ctx *c, uint64_t node) {
     }
     ReleaseSRWLockExclusive(&wonder_seed_lock);
 }
+/* Switch 2 Wonder's vertical course camera updates in units of 60 Hz frames. */
+static float wonder_camera_load_float(Ctx *c, uint64_t at) {
+    uint32_t bits = recomp_load32(c, at);
+    float value;
+    memcpy(&value, &bits, sizeof value);
+    return value;
+}
+
+static float wonder_camera_follow_step(Ctx *c, uint64_t follow) {
+    if (fps_max() <= 60) return 0.0f;
+    const float step = wonder_camera_load_float(c, follow + 0x104);
+    // Scripted and alternate camera modes keep their own target and movement limit.
+    if (!(step > 0.0f && step < 1.0f) || recomp_load8(c, follow + 0x20) ||
+        recomp_load32(c, follow + 0x108) || recomp_load32(c, follow + 0x10c)) return 0.0f;
+    return step;
+}
+
+void hos_wonder_camera_target(Ctx *c) {
+    const uint64_t follow = c->x[19];
+    const float step = wonder_camera_follow_step(c, follow);
+    if (step == 0.0f) return;
+
+    const float top_band = wonder_camera_load_float(c, follow + 0xac);
+    const float bottom_band = wonder_camera_load_float(c, follow + 0xb0);
+    const float half_height = wonder_camera_load_float(c, follow + 0x1d4);
+    if (!(bottom_band <= 0.0f && top_band >= 0.0f && half_height > 0.0f)) return;
+    const float player = wonder_camera_load_float(c, follow + 0x148);
+    const uint64_t target_at = c->x[31] + 0x7c;
+    const float target = wonder_camera_load_float(c, target_at);
+    const float low = wonder_camera_load_float(c, follow + 0x3c) + half_height;
+    const float high = wonder_camera_load_float(c, follow + 0x44) - half_height;
+    if (!(low < high)) return;
+
+    // Keep the player within the course's follow band and respect its camera bounds.
+    float corrected = target;
+    const float upper_margin = fminf(top_band, half_height);
+    const float lower_margin = fmaxf(bottom_band, -half_height);
+    if (player > target + upper_margin) corrected = player - upper_margin;
+    if (player < target + lower_margin) corrected = player - lower_margin;
+    if (corrected == target) return;
+    corrected = fminf(fmaxf(corrected, low), high);
+    if (fabsf(corrected - target) < 0.001f) return;
+
+    uint32_t bits;
+    memcpy(&bits, &corrected, sizeof bits);
+    recomp_store32_sp(c, target_at, bits);
+}
+
+void hos_wonder_camera_speed(Ctx *c) {
+    const uint64_t follow = c->x[19];
+    const float step = wonder_camera_follow_step(c, follow);
+    if (step == 0.0f) return;
+
+    const float player = wonder_camera_load_float(c, follow + 0x148);
+    const float target = wonder_camera_load_float(c, c->x[31] + 0x7c);
+    const float previous = wonder_camera_load_float(c, c->x[29] - 0x64);
+    const float top = wonder_camera_load_float(c, follow + 0xac);
+    const float bottom = wonder_camera_load_float(c, follow + 0xb0);
+    if (!(bottom <= 0.0f && top >= 0.0f)) return;
+    if (!(player > previous + top && target > previous) &&
+        !(player < previous + bottom && target < previous)) return;
+
+    // Let the normal smoothing reach its fractional step when the player is outside the band.
+    const float needed = -expm1f(-0.6931471805599453f * step) * fabsf(target - previous);
+    float limit;
+    memcpy(&limit, c->vreg[8], sizeof limit);
+    if (needed > limit) memcpy(c->vreg[8], &needed, sizeof needed);
+}
+
 volatile uint64_t hos_wonder_step_probe = 0;    /* (Wonder: its frame function's x19, set by the lifted step hook: nx2/oot_patches.py) */
 /* A movie's frame count while the frames' time is given (a Frame rate cap above 60): how many 60ths of a second this update of
    that movie player is worth, the rest carried to its next one, so the count the cutscene's cues are placed by keeps the clock

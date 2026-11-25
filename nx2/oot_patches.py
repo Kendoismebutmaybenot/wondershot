@@ -579,6 +579,33 @@ def patch_wonder_seed(s):
     return s
 
 
+# Switch 2 Wonder's vertical course camera target and smoothing limit.
+WONDER_CAMERA_HEAD = "void f_8043d320(Ctx *__restrict A64_NOESC c) {\n"
+WONDER_CAMERA_DECL = ("extern void hos_wonder_camera_target(Ctx *);\n"
+                      "extern void hos_wonder_camera_speed(Ctx *);\n")
+WONDER_CAMERA_SITES = (
+    ("L_8043dfe8:;\n", "L_8043dfe8:;\n    hos_wonder_camera_target(c);\n"),
+    ("c->x[30] = 0x8043e164ULL; f_801ff4a0(c);",
+     "    hos_wonder_camera_speed(c);\nc->x[30] = 0x8043e164ULL; f_801ff4a0(c);"),
+)
+
+
+def patch_wonder_camera_follow(s):
+    include = '#include "a64.h"\n'
+    start = s.find(WONDER_CAMERA_HEAD)
+    if start < 0 or include not in s:
+        return s
+    end = s.find("\nvoid f_", start + len(WONDER_CAMERA_HEAD))
+    if end < 0:
+        end = len(s)
+    body = s[start:end]
+    if "hos_wonder_camera_" in body or any(body.count(site) != 1 for site, _ in WONDER_CAMERA_SITES):
+        return s
+    for site, replacement in WONDER_CAMERA_SITES:
+        body = body.replace(site, replacement, 1)
+    return (s[:start] + body + s[end:]).replace(include, include + WONDER_CAMERA_DECL, 1)
+
+
 # A looping animation one frame long (the frozen Zoras under the ice in adult Zora's Domain: start 0, end 1) is one pose. At the
 # console's 60 fps the clock's step is 1 and each update lands on the same phase. Under a Frame rate cap above 60 the step is the
 # frame's own time (0.36 at 165 fps), the phase moved by it each frame, and each frame drew another phase: the pose twitched (issue
@@ -1723,6 +1750,10 @@ def patch_file(s, name, protect_hearts=False):
     if seed != out:
         lines.append("oot_patches: Wonder Seed landing guard in " + name)
         out = seed
+    camera = patch_wonder_camera_follow(out)
+    if camera != out:
+        lines.append("oot_patches: Wonder vertical camera follow in " + name)
+        out = camera
     out, loops = patch_loop_steps(out)
     if loops:
         lines.append("oot_patches: %d animation clock(s) with whole frames for a loop of one frame in %s" % (loops, name))
