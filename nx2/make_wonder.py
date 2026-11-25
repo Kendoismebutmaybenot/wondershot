@@ -111,6 +111,16 @@ def dump_folders(game):
     return (exefs if os.path.isdir(exefs) else None, romfs if os.path.isdir(romfs) else None, dlc if os.path.isdir(dlc) else None)
 
 
+def romfs_boot_error(romfs):
+    """The game needs its Switch 2 heap sizes to finish starting."""
+    heap_dir = os.path.join(romfs, "System", "HeapSize")
+    names = ("Product.Nin_Ounce_NVN2.HeapDef.byml.zs", "Default.Nin_Ounce_NVN2.HeapDef.byml.zs")
+    if not any(os.path.isfile(lp(os.path.join(heap_dir, name))) for name in names):
+        return ("This RomFS is missing the Switch 2 heap definition (System/HeapSize/%s or %s). "
+                "Wondershot cannot start without it. Select a complete Switch 2 Edition dump or its .nup." % names)
+    return None
+
+
 def check(game, work, tools):
     """@@check ok|bad: is this the game, and a version the tools can read"""
     if os.path.isdir(game):
@@ -128,6 +138,10 @@ def check(game, work, tools):
             return
         if not bid.startswith(SUPPORTED_BUILD):
             say("@@check", "bad", "This is build %s. Wondershot is made for build %s of the Switch 2 Edition." % (bid[:8], SUPPORTED_BUILD))
+            return
+        error = romfs_boot_error(romfs)
+        if error:
+            say("@@check", "bad", error)
             return
         extra = " With the Rosalina and Bellabel Park content." if dlc else " Without the Rosalina and Bellabel Park content (no dlc\\romfs)."
         say("@@check", "ok", "Super Mario Bros. Wonder – Nintendo Switch 2 Edition, build %s.%s" % (bid[:8], extra))
@@ -555,6 +569,9 @@ def build(game, out, work, tools, jobs, update=None, files="link"):
     bid = module_id(os.path.join(exefs, "main")) or ""
     if not bid.startswith(SUPPORTED_BUILD):
         fail("This is build %s of the game. Wondershot is made for build %s." % (bid[:8], SUPPORTED_BUILD))
+    error = romfs_boot_error(romfs)
+    if error:
+        fail(error)
     progress("dump", 1.0)
     pairs = [(src, os.path.join(out, name)) for name, src in (("romfs", romfs), ("dlc", dlc)) if src]
     if files == "copy":
