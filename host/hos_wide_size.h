@@ -38,6 +38,18 @@ static inline int hos_output_own_shape(uint32_t w, uint32_t h) {
     return r > game * 1.01 || r < game * 0.99;
 }
 
+/* 21:9 display modes include 2560x1080, 3440x1440 and 3840x1600. */
+static inline int hos_output_is_21_9(uint32_t w, uint32_t h) {
+    return h && (uint64_t)w * 100 >= (uint64_t)h * 230 && (uint64_t)w * 100 <= (uint64_t)h * 245;
+}
+
+static inline int hos_wonder_native_aspect(uint32_t w, uint32_t h) {
+    if (!h) return 0;
+    const double ratio = (double)w / h;
+    return hos_output_is_21_9(w, h) || fabs(ratio / (32.0 / 9.0) - 1.0) < 0.02 ||
+           fabs(ratio / (4.0 / 3.0) - 1.0) < 0.02;
+}
+
 /* The screen's ratio as the picture takes it: 5:4 to 48:9. */
 static inline double hos_wide_clamp(double want) {
     const double surround = 48.0 / 9.0;
@@ -83,6 +95,12 @@ static inline void hos_wide_size(unsigned out_h, double r, double max_px, unsign
         ow = (unsigned)(oh * r / 8) * 8;
     }
     *w = ow, *h = oh;
+}
+
+/* Wonder's startup render pool is sized for a 4K framebuffer. */
+static inline void hos_wonder_wide_fit(unsigned *w, unsigned *h) {
+    if ((uint64_t)*w * *h > 3840ULL * 2160)
+        hos_wide_size(*h, (double)*w / *h, 3840.0 * 2160.0, w, h);
 }
 
 #endif

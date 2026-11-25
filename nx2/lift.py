@@ -189,6 +189,8 @@ def main():
     if a.standalone:   # (longshot) the host's memcpy, memset, ... first, the SDK's own kept behind them (nx2/entry_hooks.py)
         entry_hooks.add(L, img)
     if a.standalone:   # (longshot) widescreen and ultrawide: C after a few of the game's instructions
+        import wonder_wide
+        wonder_wide.install(L, img, next((m["build_id"] for m in meta["modules"] if m["name"] == "main"), ""))
         import oot_wide
         oot_wide.install(L, img)
         import oot_fov   # (the gameplay lens, before projection and culling are built)

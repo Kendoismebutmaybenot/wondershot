@@ -58,6 +58,16 @@ int main() {
         if (r != n.name) std::fprintf(stderr, "%ux%u: %s, not %s\n", n.w, n.h, r.c_str(), n.name);
         assert(r == n.name);
     }
+    assert(!hos_wonder_native_aspect(2560, 1440) && !hos_wonder_native_aspect(1920, 1200));
+    assert(hos_wonder_native_aspect(3440, 1440) && hos_wonder_native_aspect(5120, 1440));
+    assert(hos_wonder_native_aspect(1024, 768) && hos_wonder_native_aspect(1600, 1200));
+    unsigned wonder_w = 3440, wonder_h = 1440;
+    hos_wonder_wide_fit(&wonder_w, &wonder_h);
+    assert(wonder_w == 3440 && wonder_h == 1440);
+    wonder_w = 5120, wonder_h = 2160;
+    hos_wonder_wide_fit(&wonder_w, &wonder_h);
+    assert(hos_output_is_21_9(wonder_w, wonder_h));
+    assert((uint64_t)wonder_w * wonder_h <= 3840ull * 2160);
     // (the Aspect ratio row: each shape once, narrowest first)
     const std::vector<Shape> s = shapes(v);
     const std::string sn = names(s);

@@ -72,7 +72,7 @@ inline double ratio(Size s) { return s.h ? (double)s.w / s.h : 0.0; }
 /// they are small (1600x1024: 25:16), else as its ratio to 1 ("1.85:1")
 inline std::string ratio_name(Size s) {
     const double r = ratio(s);
-    if (r >= 2.30 && r <= 2.45) return "21:9";
+    if (hos_output_is_21_9(s.w, s.h)) return "21:9";
     static const struct {
         const char* name;
         double r;

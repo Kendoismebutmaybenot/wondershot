@@ -341,6 +341,10 @@ static uint64_t host_guest_alloc(uint64_t size) {
 void hos_watch_guest_writes(const uint8_t *data, uint64_t size);   /* nvn_native.c */
 static void host_watch_guest_writes(uint64_t guest, uint64_t size) { hos_watch_guest_writes(hos_guest_base() + guest, size); }
 static float host_aspect_ratio(void) { return hos_aspect_ratio; }
+static uint64_t host_wonder_wide_size(void) {
+    extern uint64_t hos_wonder_wide_size;
+    return hos_wonder_wide_size;
+}
 #ifndef _WIN32
 int hos_sdl_desktop_size(int *width, int *height);   /* hos_sdl.c */
 #endif
@@ -482,6 +486,7 @@ static const MkwVkHost vk_host = {
     nvn_output_preview_request,
     hos_pad_raw_player, hos_players,   /* (version 42, Wondershot) */
     hos_sdl_pad_info, hos_sdl_player_wanted,   /* (version 43) */
+    host_wonder_wide_size,
 };
 
 static const MkwVkRenderer *vk;   /* the Vulkan back end, when it was chosen and started */

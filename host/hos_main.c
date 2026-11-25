@@ -1939,6 +1939,38 @@ float hos_aspect_ratio = 0;   /* (the window's default shape: host/display.c) */
 /* (nx2/oot_wide.py) read by the widescreen patches in the game's code; 0: the game's own 16:9 */
 volatile uint64_t hos_wide_out, hos_wide_scene;
 volatile float hos_wide_ratio, hos_wide_squeeze, hos_wide_margin;
+uint64_t hos_wonder_wide_size;
+
+void hos_wonder_wide_display(Ctx *c, uint64_t args) {
+    if (!hos_wonder_wide_size || recomp_load32(c, args + 20) != 3840 || recomp_load32(c, args + 24) != 2160)
+        return;
+    const uint32_t width = (uint32_t)hos_wonder_wide_size;
+    const uint32_t height = (uint32_t)(hos_wonder_wide_size >> 32);
+    recomp_store32(c, args + 20, width);
+    recomp_store32(c, args + 24, height);
+    hos_log("boot: Wonder native aspect display %ux%u", width, height);
+}
+
+static void wonder_wide_init(size_t image_size, unsigned width, unsigned height) {
+    /* Read by the default perspective camera and the routine that computes
+       the horizontal bounds of the orthographic gameplay camera. */
+    const size_t aspect_offset = 0x2c71b14;
+    if (!hos_wonder_native_aspect(width, height) || image_size < aspect_offset + sizeof(float)) return;
+
+    uint8_t *const ratio_address = A64_MEM + IMAGE_BASE + aspect_offset;
+    uint32_t original;
+    memcpy(&original, ratio_address, sizeof original);
+    if (original != 0x3fe38e3b) return;
+
+    hos_wonder_wide_fit(&width, &height);
+    const float ratio = (float)width / height;
+    memcpy(ratio_address, &ratio, sizeof ratio);
+    hos_wonder_wide_size = (uint64_t)height << 32 | width;
+    hos_wide_out = hos_wonder_wide_size;
+    hos_wide_ratio = ratio;
+    hos_aspect_ratio = ratio;
+    hos_log("boot: Wonder native camera ratio %.4f", (double)ratio);
+}
 int hos_camera_trace_enabled(void) {
     FILE *marker = fopen("camera-clearance.trace", "rb");
     if (!marker) return 0;
@@ -2312,7 +2344,11 @@ static int game_main(int argc, char **argv) {
         return 1;
     }
     hos_mem_init(hos_image_end);
-    {   /* (longshot) Widescreen and ultrawide (nx2/oot_wide.py): HOS_ASPECT=<ratio> (2.3889 for 3440x1440), else the Insert menu's
+    uint32_t hos_output_size(int height);
+    if (!strcmp(hos_main_build_id, "ec47e6f8846d2a7b6892e2682845c7255f7117ae")) {
+        /* The selected output shape sets Wonder's render target and camera at boot. */
+        wonder_wide_init(n, hos_output_size(0), hos_output_size(1));
+    } else {   /* (longshot) Widescreen and ultrawide (nx2/oot_wide.py): HOS_ASPECT=<ratio> (2.3889 for 3440x1440), else the Insert menu's
            Aspect ratio (on unless it says 0) takes the main monitor's shape. The game's picture takes that shape at its own height (the
            world wider at the sides on an ultrawide screen, narrower on a 16:10 or 4:3 one), its 16:9 cameras the picture's ratio.
            An output that is not 16:9 takes precedence over both HOS_ASPECT and the Aspect ratio, matching the menu's picture. Wider
@@ -2344,7 +2380,6 @@ static int game_main(int argc, char **argv) {
         }
         extern volatile uint64_t hos_wide_out, hos_wide_scene;
         extern volatile float hos_wide_ratio, hos_wide_squeeze, hos_wide_margin;
-        uint32_t hos_output_size(int height);
         const uint32_t output_w = hos_output_size(0), output_h = hos_output_size(1);
         /* An output of a shape of its own (the Insert menu's Aspect ratio: 21:9, 16:10, 4:3, a 32:9 surround...) asks for that
            shape, over HOS_ASPECT and Ultrawide, even if the OS reports one monitor (host/hos_wide_size.h) */

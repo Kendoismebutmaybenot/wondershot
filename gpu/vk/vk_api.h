@@ -14,7 +14,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 43   /* (40: HOS_BIND_SPRINT_TOGGLE; 41: live output preview; 42: players 2 to 4's pads) */
+#define MKWVK_API_VERSION 44
 
 enum { OUTPUT_TRIAL_EXPIRED, OUTPUT_TRIAL_PREPARING, OUTPUT_TRIAL_READY, OUTPUT_TRIAL_ACTIVE, OUTPUT_TRIAL_SHOWN };
 enum { HOS_MONITOR_CURRENT = 1, HOS_MONITOR_PRIMARY = 2 };
@@ -384,6 +384,8 @@ typedef struct MkwVkHost {
        the last. pad_wanted: the pad player has been given by name, 0 for Auto */
     int (*pad_info)(int i, char *name, size_t cap, int *player);
     int (*pad_wanted)(int player, char *name, size_t cap);
+    /* Version 44: Wonder's native non-16:9 framebuffer, height in the high word, or zero. */
+    uint64_t (*wonder_wide_size)(void);
 } MkwVkHost;
 /* (version 35) a cheat's kind: a heading (no opcodes), a data cheat (switched), a master cheat (always on), not supported (note) */
 enum { MKWVK_CHEAT_HEADING, MKWVK_CHEAT_DATA, MKWVK_CHEAT_MASTER, MKWVK_CHEAT_UNSUPPORTED };

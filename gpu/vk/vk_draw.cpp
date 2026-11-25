@@ -84,6 +84,7 @@
 
 #include "vk_builtin_spv.h"   // (RX_VK_SHADER_DIR)
 #include "shaders/clear_f_frag_spv.h"
+#include "shaders/wonder_lobby_frag_spv.h"
 #include "shaders/clear_i_frag_spv.h"
 #include "shaders/clear_u_frag_spv.h"
 #include "shaders/clear_vert_spv.h"
@@ -3973,9 +3974,11 @@ struct DescWriter {
     std::vector<VkDescriptorBufferInfo> bufs;
     std::vector<VkDescriptorImageInfo> imgs;
     std::vector<VkBufferView> views;
+    std::array<uint64_t, 2> sampled_sizes{};
     const Program* prog = nullptr;   // (the program they were built for: a dispatch builds its own over a draw's)
     void reset() {
         writes.clear(), bufs.clear(), imgs.clear(), views.clear();
+        sampled_sizes = {};
     }
 };
 TLS_OBJECT(dw, DescWriter)
@@ -4591,6 +4594,8 @@ void build_descriptors(const NvnState& s, const Program& p) {
                                tex ? tex->width : 0, tex ? tex->height : 0, tex ? tex->layers : 0, tex ? (void*)tex->image : nullptr,
                                (void*)view, view ? "" : " (dummy)");
                 if (view && tex && tex->gpu_written) draw_sampled().push_back(tex);
+                if (view && tex && out.imgs.size() < out.sampled_sizes.size())
+                    out.sampled_sizes[out.imgs.size()] = (uint64_t)tex->height << 32 | tex->width;
                 if (!view) view = dummies.view[(int)vt], st_dummy_textures += handle != 0;
                 // (an image of one level: no anisotropy of the row's, sampler_make)
                 out.imgs.push_back({sampler_for((int)(handle >> 20), d.is_depth, tex && tex->levels <= 1), view,
@@ -5134,6 +5139,8 @@ struct Pass {
     std::vector<const Texture*> sampled;   // First six distinct samples for pass tracing only.
     uint16_t sampled_targets = 0;          // (colour i bit i, depth bit 8: targets earlier draws sampled)
     uint16_t written = 0;                  // (its targets written so far: colour i bit i, depth bit 8)
+    float wonder_pause_left = 0.0f;
+    bool wonder_hud_badge = false;
 };
 TLS_OBJECT(pass, Pass)
 /// (vk_replay.cpp maybe_split) whether this thread's command buffer is inside a render pass: a part that ends with none open
@@ -5305,6 +5312,8 @@ void begin_pass(VkCommandBuffer cmd, const Targets& at) {
     ps.wm_or = 0, ps.wm_n = 0;
     ps.clears = 0, ps.first_prog = 0;
     ps.sampled.clear(), ps.sampled_targets = 0, ps.written = 0;
+    ps.wonder_pause_left = 0.0f;
+    ps.wonder_hud_badge = false;
     vkCmdBeginRendering(cmd, &ri);
     ps.open = true;
     st_passes++;
@@ -5335,7 +5344,7 @@ struct DynState {
 // (cb: the thread's CmdBound, in dynamic_state)
 #define DYN_CHANGED(f) ((!cb.dyn_valid || std::memcmp(&d.f, &cb.dyn.f, sizeof d.f)) && (FINE_X(FC_DYN_CALLS, 1), true))
 
-constexpr int kDynF = 13, kDynU = 35;
+constexpr int kDynF = 16, kDynU = 35;
 struct DynFast {
     bool on = false;
     float fp[kDynF]{};
@@ -5384,12 +5393,15 @@ bool desc_slots_kept(const DescBound& k, uint64_t reg_gen) {
     return true;
 }
 /// wm_sig: what the draw's program makes of the write masks (program_wm_sig)
-int dyn_pack(const NvnState& s, const Targets& at, VkPrimitiveTopology topo, bool mesh, uint64_t wm_sig, float* fp, uint32_t* up,
-             uint8_t* raw) {
+int dyn_pack(const NvnState& s, const Targets& at, VkPrimitiveTopology topo, bool mesh, uint64_t wm_sig, float ui_scale, float ui_left,
+             float ui_top,
+             float* fp, uint32_t* up, uint8_t* raw) {
     fp[0] = s.viewport[0][0], fp[1] = s.viewport[0][1], fp[2] = s.viewport[0][2], fp[3] = s.viewport[0][3];
     fp[4] = s.depth_near, fp[5] = s.depth_far;
     std::memcpy(fp + 6, s.blend_color, sizeof s.blend_color);
     fp[10] = s.poly_offset[0], fp[11] = s.poly_offset[1], fp[12] = s.poly_offset[2];
+    fp[13] = ui_scale;
+    fp[14] = ui_left, fp[15] = ui_top;
     up[0] = (uint32_t)s.scissor[0], up[1] = (uint32_t)s.scissor[1], up[2] = (uint32_t)s.scissor[2], up[3] = (uint32_t)s.scissor[3];
     up[4] = s.stencil_ref[0], up[5] = s.stencil_ref[1];
     up[6] = s.stencil_value_mask[0], up[7] = s.stencil_value_mask[1];
@@ -5413,14 +5425,128 @@ int dyn_pack(const NvnState& s, const Targets& at, VkPrimitiveTopology topo, boo
     return atb + 8;
 }
 
-/// p: the draw's program, for its dynamic write masks
+static bool wonder_sampled_size(size_t i, uint32_t width, uint32_t height) {
+    return dw().sampled_sizes[i] == ((uint64_t)height << 32 | width);
+}
+
+static bool wonder_native_ui_target(const Targets& at) {
+    if (!at.height || !host || host->version < 44 || !host->wonder_wide_size) return false;
+    const uint64_t size = host->wonder_wide_size();
+    return at.width == (uint32_t)size && at.height == size >> 32;
+}
+
+struct WonderPauseCursor {
+    uint64_t frame = 0;
+    uint32_t target = 0;
+    float shift = 0.0f;
+};
+TLS_OBJECT(wonder_pause_cursor, WonderPauseCursor)
+
+static bool wonder_panel(const NvnState& s, const Program& p) {
+    const bool strip = p.key == 0x17eae0d5631a64d9ULL && wonder_sampled_size(0, 8, 8);
+    const bool backdrop = p.key == 0x17eae0d5631a64d9ULL && wonder_sampled_size(0, 640, 640);
+    const bool footer = p.key == 0xb8137d604f8f3c66ULL;
+    const bool menu_edge = p.key == 0xdb4df6bed55689e8ULL &&
+                           wonder_sampled_size(0, 16, 16) && wonder_sampled_size(1, 2, 2);
+    if (!(strip || backdrop || footer || menu_edge)) return false;
+    const nvn_p_bind_buf& uniform = s.ubo[0][0];
+    if (menu_edge) {
+        // The same material also draws the label backgrounds. Keep those with their text.
+        float width = 0.0f;
+        return uniform.addr && uniform.size >= 0x214 &&
+               ub_read(uniform.addr + 0x210, &width, sizeof width) && width >= 1920.0f;
+    }
+    float model[8] = {};
+    if (!uniform.addr || uniform.size < 0x40 + sizeof model ||
+        !ub_read(uniform.addr + 0x40, model, sizeof model)) return false;
+    const float x = model[3], y = model[7];
+    if (strip) return std::abs(x) < 20.0f && y > 335.0f && y < 390.0f && std::abs(model[1] + 0.08716f) < 0.001f;
+    if (backdrop) return x == 0.0f && y == 0.0f && model[0] == 1.0f && model[5] == 1.0f;
+    // The course intro's footer starts at the lower edge of the 1080-unit canvas.
+    return x == 0.0f && y == -540.0f;
+}
+
+// Wonder's layout programs use 16:9 coordinates on any framebuffer.
+// Keep the viewport and its clip rectangles in the same centred layout space.
+// Full-screen copies and world programs keep the native viewport.
+static float wonder_ui_scale(const NvnState& s, const Targets& at, const Program& p) {
+    if (!wonder_native_ui_target(at)) return 1.0f;
+    switch (p.key) {
+    case 0x17eae0d5631a64d9ULL: // pictures and icons
+    case 0x76644328dc442686ULL:
+    case 0x46cbdd20fb67741aULL:
+    case 0x74927aefe950d3efULL: // menu title label backplate
+    case 0x443b1998ab8811c6ULL: // pause and main menu labels
+    case 0x090a7e2988df84a8ULL: // pause course details
+    case 0x3d70b798dc89fea8ULL: // pause course details divider
+    case 0x88273b441f2a9230ULL: // pause badge detail
+    case 0x1c8d131150e8ad07ULL:
+    case 0xb8137d604f8f3c66ULL:
+    case 0xa023a0f885f649f0ULL:
+    case 0xdb4df6bed55689e8ULL:
+    case 0xd882b3cd96787bbaULL:
+    case 0x59d456a771f4bd6dULL: // glyphs
+    case 0xde55dda9ee11d53aULL:
+    case 0xf5af8e0021111a48ULL:
+    case 0x4ec3eb6f3380885fULL:
+    case 0x3678d4e334c59348ULL: // course title glyphs
+    case 0xf71d3090df626f8aULL: // cached text shadows
+        return wonder_panel(s, p) ? 1.0f : (at.height * (16.0f / 9.0f)) / at.width;
+    default:
+        return 1.0f;
+    }
+}
+
+static bool wonder_top_left_hud(Pass& ps, const NvnState& s, const Targets& at, const Program& p) {
+    const auto& uniform = s.ubo[0][0];
+    if (!uniform.addr) return false;
+    // The counters, including their animated digits, arrive as one layout texture.
+    const bool counters = p.key == 0x17eae0d5631a64d9ULL && (at.height / 6) &&
+                          wonder_sampled_size(0, at.width * 2 / 3, at.height / 6);
+    const bool badge = p.key == 0xd882b3cd96787bbaULL;
+    const bool badge_picture = ps.wonder_hud_badge && p.key == 0x17eae0d5631a64d9ULL;
+    if (counters || badge || badge_picture) {
+        float model[8]{};
+        if (uniform.size < 0x40 + sizeof model || !ub_read(uniform.addr + 0x40, model, sizeof model)) return false;
+        const float x = model[3], y = model[7];
+        if (counters) return x == -280.0f && y == 410.0f;
+        const bool badge_position = x == -864.0f && y >= 213.0f && y <= 273.0f;
+        if (badge && badge_position) ps.wonder_hud_badge = true;
+        return badge_position;
+    }
+    if (!ps.wonder_hud_badge) return false;
+    if (p.key == 0xf71d3090df626f8aULL) {
+        const auto& textures = gfx_sampled();
+        return !textures.empty() && textures[0] && textures[0]->width == 29 && textures[0]->height == 29;
+    }
+    if (p.key == 0xde55dda9ee11d53aULL) {
+        float transform[8]{};
+        return uniform.size >= sizeof transform && ub_read(uniform.addr, transform, sizeof transform) &&
+               transform[3] < -800.0f && transform[7] > 390.0f;
+    }
+    return false;
+}
+
+/// p: the draw's program, for its dynamic write masks and layout viewport
 void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, bool mesh, const Program& p) {
     Pass& ps = pass();   // (once: the accessor is a call and a thread-local read at each use. The same object for the thread's life: draw_begin_recording resets it in place)
     CmdBound& cb = bound();   // (once, as the pass)
     float df[kDynF];
     uint32_t du[kDynU];
     uint8_t db[160];
-    const int nb = dyn_pack(s, at, topo, mesh, program_wm_sig(p), df, du, db);
+    const float ui_scale = mesh ? 1.0f : wonder_ui_scale(s, at, p);
+    float ui_shift = ui_scale < 1.0f ? ps.wonder_pause_left : 0.0f;
+    if (ui_scale < 1.0f && p.key == 0x17eae0d5631a64d9ULL && wonder_sampled_size(0, 72, 72)) {
+        // The selection pointer is drawn later, after the course info pass.
+        const WonderPauseCursor& pause = wonder_pause_cursor();
+        if (at.color[0] && pause.target == at.color[0]->id && pause.frame == texture_frame_no())
+            ui_shift = pause.shift;
+    }
+    const float ui_x = std::min(ui_scale, 1.0f), ui_y = std::min(1.0f / ui_scale, 1.0f);
+    const bool top_left_hud = ui_scale != 1.0f && wonder_top_left_hud(ps, s, at, p);
+    const float ui_left = top_left_hud ? 0.0f : at.width * (1.0f - ui_x) * 0.5f + ui_shift;
+    const float ui_top = top_left_hud ? 0.0f : at.height * (1.0f - ui_y) * 0.5f;
+    const int nb = dyn_pack(s, at, topo, mesh, program_wm_sig(p), ui_scale, ui_left, ui_top, df, du, db);
     if (!dump_on() && cb.dyn_valid && cb.dyn_fast.on && cb.dyn_fast.nb == nb &&
         dyn_same(df, kDynF, du, kDynU, db, nb, cb.dyn_fast.fp, cb.dyn_fast.up, cb.dyn_fast.raw)) {
         ps.wm_or |= cb.dyn_fast.wm0, ps.wm_n = cb.dyn_fast.wm_n;   // (the pass trace still sees the masks)
@@ -5448,6 +5574,10 @@ void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, Vk
     // the viewport upside down (negative height): NVN's NDC has +y up, Vulkan's down
     float vx = s.viewport[0][0], vy = s.viewport[0][1], vw = s.viewport[0][2], vh = s.viewport[0][3];
     if (vw == 0.0f && vh == 0.0f) vx = 0, vy = 0, vw = (float)at.width, vh = (float)at.height;
+    vx = vx * ui_x + ui_left;
+    vy = vy * ui_y + ui_top;
+    vw *= ui_x;
+    vh *= ui_y;
     d.vp = {vx, vy + vh, vw, -vh, std::clamp(s.depth_near, 0.0f, 1.0f), std::clamp(s.depth_far, 0.0f, 1.0f)};
     d.sc = {{0, 0}, {at.width, at.height}};
     if (s.scissor[2] > 0 && s.scissor[3] > 0) {
@@ -5455,6 +5585,13 @@ void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, Vk
         const int32_t x1 = std::min<int32_t>(s.scissor[0] + s.scissor[2], (int32_t)at.width);
         const int32_t y1 = std::min<int32_t>(s.scissor[1] + s.scissor[3], (int32_t)at.height);
         d.sc = {{x0, y0}, {(uint32_t)std::max(0, x1 - x0), (uint32_t)std::max(0, y1 - y0)}};
+        if (ui_scale != 1.0f) {
+            const int32_t left = std::max(0l, std::lround(x0 * ui_x + ui_left));
+            const int32_t right = std::max(0l, std::lround((x0 + d.sc.extent.width) * ui_x + ui_left));
+            const int32_t top = (int32_t)std::lround(y0 * ui_y + ui_top);
+            const int32_t bottom = (int32_t)std::lround((y0 + d.sc.extent.height) * ui_y + ui_top);
+            d.sc = {{left, top}, {(uint32_t)(right - left), (uint32_t)(bottom - top)}};
+        }
     }
     std::memcpy(d.blend, s.blend_color, sizeof d.blend);
     for (int f = 0; f < 2; f++)
@@ -5720,6 +5857,7 @@ std::unordered_map<uint64_t, ClearFailure> clear_failures;
 constexpr int kClearTries = 3;          // (failed this often, a key backs off: no try a frame)
 constexpr int kClearRetryEvery = 600;   // (a key that backed off is tried once in this many of its clears)
 VkPipelineLayout clear_layout = VK_NULL_HANDLE;
+constexpr int kWonderLobbyPattern = 3;
 
 /// The pipeline of a masked clear, made on its first use. A layout, module or pipeline the driver did not make is not
 /// used and not kept: the key is tried again on its next clears, kClearTries times, then once every kClearRetryEvery of its
@@ -5749,7 +5887,9 @@ VkPipeline clear_pipeline(const Targets& at, int index, uint32_t mask, int kind)
         if (lr != VK_SUCCESS || !made) return fail("pipeline layout", lr);
         clear_layout = made;
     }
-    const auto fs = kind == 1 ? BUILTIN_SPV(CLEAR_U_FRAG_SPV) : kind == 2 ? BUILTIN_SPV(CLEAR_I_FRAG_SPV) : BUILTIN_SPV(CLEAR_F_FRAG_SPV);
+    const auto fs = kind == kWonderLobbyPattern ? BUILTIN_SPV(WONDER_LOBBY_FRAG_SPV) :
+                    kind == 1 ? BUILTIN_SPV(CLEAR_U_FRAG_SPV) :
+                    kind == 2 ? BUILTIN_SPV(CLEAR_I_FRAG_SPV) : BUILTIN_SPV(CLEAR_F_FRAG_SPV);
     const uint32_t* fw = fs.code;
     const size_t fn = fs.size / 4;
     const std::vector<uint32_t> frag = spirv_location(fw, fn, (uint32_t)index);
@@ -5992,6 +6132,37 @@ void clear_stats(int64_t* clears, int64_t* masked) {
 }
 
 namespace {
+bool wonder_lobby_background(VkCommandBuffer cmd, const Targets& at) {
+    if (at.n != 1 || !at.color_view[0] || format_kind(at.color_format[0]) != 0) return false;
+    const VkPipeline pipeline = clear_pipeline(at, 0, 0xf, kWonderLobbyPattern);
+    if (!pipeline) return false;
+
+    clear_after_draws(cmd);
+    begin_pass(cmd, at);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+    bound().reset_keeping_index();
+    descriptors_disturbed();
+    const VkViewport viewport{0.0f, 0.0f, (float)at.width, (float)at.height, 0.0f, 1.0f};
+    const VkRect2D scissor{{0, 0}, {at.width, at.height}};
+    const float size[4]{(float)at.width, (float)at.height, 0.0f, 0.0f};
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+    vkCmdPushConstants(cmd, clear_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof size, size);
+    vkCmdDraw(cmd, 3, 1, 0, 0);
+    pass().written |= 1;
+    pass().draws++;
+    return true;
+}
+
+void wonder_place_pause_controls(Pass& ps, const Targets& at) {
+    // The stock left pane covers 668 of the layout's 1920 units. The widest
+    // control row ends 368 units left of the centre in its unscaled layout.
+    const float pane_right = at.width * (668.0f / 1920.0f);
+    const float controls_right = 0.5f * at.width - at.height * (368.0f / 1080.0f);
+    const float padding = at.height * (16.0f / 1080.0f);
+    ps.wonder_pause_left = std::min(0.0f, pane_right - controls_right - padding);
+    wonder_pause_cursor() = {texture_frame_no(), at.color[0] ? at.color[0]->id : 0, ps.wonder_pause_left};
+}
 } // namespace
 
 void draw_flush_recording(int slot) {
@@ -8625,10 +8796,15 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
                 if (d.is_written) return true;
         return false;
     }();
-    const bool same_desc = !no_reuse && !early_rebind && cb.desc.valid && cb.desc.prog == &p && cb.desc.bind == s.bind_gen &&
+    const bool native_ui = (p.key == 0x17eae0d5631a64d9ULL || p.key == 0xdb4df6bed55689e8ULL ||
+                            p.key == 0xfc83575fd66091b9ULL) &&
+                           wonder_native_ui_target(at);
+    const bool need_writer = p.fallback || native_ui;
+    const bool same_desc = !no_reuse && !early_rebind && cb.desc.valid && cb.desc.prog == &p &&
+                           cb.desc.bind == s.bind_gen &&
                            cb.desc.ub == ub_gen && cb.desc.dgen == dgen &&
                            (slotgen ? cb.desc.fp_on && desc_slots_kept(cb.desc, reg_gen) : cb.desc.reg == reg_gen) &&
-                           (!p.fallback || dw().prog == &p);
+                           (!need_writer || dw().prog == &p);
     if (p.fallback && !same_desc && dw().prog != &p && cb.desc.valid && cb.desc.prog == &p) {
         static std::atomic<int> told{0};
         if (told++ < 3) logf("vk: fallback: %016llx's descriptors built again after a dispatch", (unsigned long long)p.key);
@@ -8752,6 +8928,18 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         FINE_SCOPE(FT_HAZARD);
         begin_pass(cmd, at);
     }
+    const bool ultrawide = native_ui && at.width * 9 > at.height * 16;
+    // The lobby draws the header immediately after its blurred map. Course
+    // pause draws its side panel here instead and keeps the level backdrop.
+    const bool lobby_background = ultrawide && p.key == 0xdb4df6bed55689e8ULL &&
+                                  ps.draws && ps.prog == 0xad0d9c6df3c43c99ULL &&
+                                  wonder_sampled_size(0, 16, 16) && wonder_sampled_size(1, 2, 2) &&
+                                  wonder_lobby_background(cmd, at);
+    if (ultrawide && p.key == 0xfc83575fd66091b9ULL &&
+        wonder_sampled_size(0, 2, 2) && wonder_sampled_size(1, 640, 640))
+        wonder_place_pause_controls(ps, at);
+    if (p.key == 0x090a7e2988df84a8ULL) ps.wonder_pause_left = 0.0f;
+
     probe_draw(s, p, ps.draws);   // (longshot: RX_VK_PROBE)
     gprof_run(cmd, p.key);   // (RX_VK_PASS_TIMING=2)
     ps.prog = p.key;
@@ -8776,7 +8964,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
             cb.vertex_set.on = false;
         }
     }
-    if (!same_desc || pre_recorded) {   // (longshot: after DLAA's commands, its pushes are gone: temporal_pre_bloom)
+    if (!same_desc || pre_recorded || lobby_background) {   // An intervening pass can disturb graphics bindings.
         FINE_SCOPE(FT_BINDDESC);
         if (!bind_descriptors(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p)) SKIP_HERE();
         cb.desc.valid = true, cb.desc.prog = &p, cb.desc.bind = s.bind_gen, cb.desc.reg = reg_gen;

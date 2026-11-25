@@ -588,11 +588,10 @@ PageBuilder& PageBuilder::row(Setting s, Place p) {
             "@Motion", "motion_controls", "motion_sensitivity_x", "motion_sensitivity_y", "invert_motion_x", "invert_motion_y",
             "motion_deadzone", "shadow_resolution", "discord_status", "bug_report",
             "audio_output",    // (Speaker layout: Wonder is stereo only, host/nn_audio.c au_speakers)
-            // (Wondershot, 2026-11-24: rows with no effect in Wonder) OoT's debug cheats, the microphone (Wonder has no voice input),
-            // the temporal upscaler (it hooks OoT's own anti-aliasing pass: no DLSS feature is ever made here) and the aspect
-            // ratio (Wonder has no widescreen patch: anything but 16:9 only stretches)
+            // (Wondershot, 2026-11-24: rows with no effect in Wonder) OoT's debug cheats, the microphone (Wonder has no voice input)
+            // and the temporal upscaler (it hooks OoT's own anti-aliasing pass: no DLSS feature is ever made here).
             "debug_tools", "autosave:", "damage_taken", "microphone", "microphone_gain", "test_microphone",
-            "dlss", "dlss_model", "dlss_pre_bloom", "resolution", "ultrawide",
+            "dlss", "dlss_model", "dlss_pre_bloom", "resolution",
             // (Wondershot, alpha: no frame generation. DLSS-G needs the temporal upscaler's depth and motion, which Wonder never
             // has, and the game is light enough to run at 120 without made frames. The rows are left out; the value stays 0, off)
             "frame_generation", "frame_generation_by"};
