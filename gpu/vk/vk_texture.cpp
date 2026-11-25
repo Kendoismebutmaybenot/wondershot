@@ -163,9 +163,29 @@ VkFormat storage_view_format(VkFormat f) {
     }
 }
 }  // namespace
-/// (longshot) The format of the image made for a texture of this Vulkan format (vk_format's, widened): depth as it is, decoded ASTC as
-/// RGBA8, the rest as their UNORM twin. create's choice, and the pipeline state list's (attachment_format): one rule for both
+/// The image and precompiled pipelines must use the same format for a render target.
 VkFormat image_format_of(VkFormat vf, bool astc_decoded) {
+    if (vf == VK_FORMAT_D24_UNORM_S8_UINT) {
+        static const VkFormat format = [] {
+            constexpr VkFormatFeatureFlags required = VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT |
+                                                       VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+            constexpr VkFormat native = VK_FORMAT_D24_UNORM_S8_UINT;
+            constexpr VkFormat fallback = VK_FORMAT_D32_SFLOAT_S8_UINT;
+            if ((format_props(native).optimalTilingFeatures & required) == required) return native;
+            if ((format_props(fallback).optimalTilingFeatures & required) != required) return native;
+            constexpr VkImageUsageFlags usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+                                                VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                                VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+            VkImageFormatProperties limits{};
+            if (vkGetPhysicalDeviceImageFormatProperties(dev.physical, fallback, VK_IMAGE_TYPE_2D,
+                                                         VK_IMAGE_TILING_OPTIMAL, usage, 0, &limits) != VK_SUCCESS)
+                return native;
+            // Some drivers can render to D24S8 but cannot sample it. Wonder reads the scene depth back in later passes.
+            logf("vk: D24S8 cannot be used as a sampled depth attachment, using D32FS8");
+            return fallback;
+        }();
+        return format;
+    }
     return is_depth_format(vf) ? vf : astc_decoded ? VK_FORMAT_R8G8B8A8_UNORM : linear_twin(vf);
 }
 /// (longshot) The format a view of an image takes for a use: the view's NVN format as this device has it (widened), the image's own
