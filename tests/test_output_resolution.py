@@ -105,6 +105,7 @@ int main(int argc, char **argv) {
         return order;
     };
     for (const auto& shape : output_shapes()) {
+        opts.ultrawide = aspect_index(shape.name);
         const std::vector<int> order = in_order(shape.name);
         const int n = (int)order.size();
         assert(n >= 1);
@@ -114,7 +115,9 @@ int main(int argc, char **argv) {
         }
     }
     if (!custom_output.w) {
+        opts.ultrawide = aspect_index("16:9");
         assert(step_output_choice(2, 1) == 3 && step_output_choice(3, 1) == 5 && step_output_choice(5, 1) == 5);   // (4K, 5K)
+        opts.ultrawide = aspect_index("32:9");
         assert(step_output_choice(4, 1) == 4 && step_output_choice(4, -1) == 4);   // (5120x1440: 32:9, a shape of its own)
         // (the Aspect ratio row: 16:9 and 32:9; choosing a shape takes the size chosen when it has it, else the screen's own
         // size, else the largest)
@@ -130,6 +133,7 @@ int main(int argc, char **argv) {
         assert(output_for_aspect(0) == 2 && output_for_aspect(1) == 4);
         screen_w = 5120, screen_h = 1440;
         assert(strcmp(tx_ultrawide(1), "32:9 (monitor's)") == 0);
+        opts.ultrawide = aspect_index("16:9");
         assert(aspect_of_choice(1, 1) == 0 && step_output_choice(1, 1) == 0);
         assert(strcmp(tx_output_res(2), "2560x1440") == 0);
         const int new_modes = custom_index() + 1;
@@ -137,6 +141,17 @@ int main(int argc, char **argv) {
         assert(last_choice() == new_modes + 1 && output_choice_of(3440, 1440) == new_modes);
         assert(aspect_last() == 3 && aspect_shape(0) == "4:3" && aspect_shape(2) == "21:9" && aspect_shape(3) == "32:9");
         assert(output_for_aspect(0) == new_modes + 1 && output_for_aspect(2) == new_modes);
+        // A stale ultrawide resolution or startup ID cannot leak into the 16:9 list.
+        const int flat = aspect_index("16:9");
+        opts.ultrawide = flat;
+        for (int wide : {4, new_modes})
+            for (int dir : {-1, 1})
+                assert(output_shape_of(step_output_choice(wide, dir)) == flat);
+        aspect_started = flat;
+        output_started = new_modes;
+        assert(output_shape_of(output_for_aspect(flat)) == flat);
+        aspect_started = -1;
+        output_started = 0;
         assert(aspect_of_choice(new_modes, 0) == 2 && aspect_of_choice(new_modes + 1, 0) == 0);
         output_extras.clear();
         screen_w = screen_h = host_w = host_h = 0;

@@ -51,7 +51,6 @@ std::string host_shape();
 bool aspect_follows_host(int v);
 int aspect_of_choice(int v, int ultrawide);
 int aspect_for_choice(int v);
-std::string step_shape(int id);
 int step_output_choice(int id, int dir);
 extern int aspect_started, output_started;   // (the rows' values at the start: outputs_sync)
 int output_for_aspect(int v);

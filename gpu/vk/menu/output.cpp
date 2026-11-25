@@ -249,27 +249,22 @@ int aspect_of_choice(int v, int) {
 /// The Aspect ratio row's value that choice v needs (the control bridge, before it walks the Output resolution to a size of
 /// another shape): its own shape; a 16:9 size, 16:9 itself, not the monitor's shape the row may be at
 int aspect_for_choice(int v) { return aspect_of_choice(v, 0); }
-/// The Output resolution's arrows walk through sizes of the selected shape.
-std::string step_shape(int id) {
-    return dm::ratio_name(size_of(output_at(id)));
-}
 Out picture_for(int v, bool* native);
-// Sort the chosen shape's sizes by the framebuffer they render, including a custom size.
+// Walk the selected aspect's sizes in framebuffer order, including a matching custom size.
 int step_output_choice(int id, int dir) {
-    const std::string shape = step_shape(id);
+    const std::string shape = aspect_shape(opts.ultrawide);
     std::vector<std::pair<Out, int>> order;
     for (int i = 0; i <= last_choice(); i++) {
-        if (output_choice(i) != i) continue;
-        const Out shown = picture_for(i, nullptr);
-        // (the game's own is in the walk of the shape it is drawn at, as its row shows it)
-        if (i == output_choice(id) || dm::ratio_name(size_of(output_at(i))) == shape || (i == 0 && dm::ratio_name(size_of(shown)) == shape))
-            order.push_back({shown, i});
+        if (output_choice(i) == i && dm::ratio_name(size_of(output_at(i))) == shape)
+            order.push_back({picture_for(i, nullptr), i});
     }
+    if (order.empty()) return output_choice(id);
     std::stable_sort(order.begin(), order.end(), [](const std::pair<Out, int>& a, const std::pair<Out, int>& b) {
         return a.first.w != b.first.w ? a.first.w < b.first.w : a.first.h < b.first.h;
     });
     int at = 0;
     while (at < (int)order.size() && order[at].second != output_choice(id)) at++;
+    if (at == (int)order.size()) return (dir < 0 ? order.back() : order.front()).second;
     return order[std::clamp(at + dir, 0, (int)order.size() - 1)].second;
 }
 /// The Output resolution the Aspect ratio row's value v takes: the one the game started with at its shape; the one chosen when
@@ -278,10 +273,9 @@ int step_output_choice(int id, int dir) {
 int aspect_started = -1;   // (the Aspect ratio row's value at the start, from the size the run started with: outputs_sync)
 int output_started = 0;    // (the Output resolution the run started with)
 int output_for_aspect(int v) {
-    // (back at the shape the game started with: the size it started with, so nothing is left to restart for. A first start on a
-    // 21:9 screen is 21:9 with the game's own size, which ultrawide=1 widens: stepping away and back took 5120x2160 (native))
-    if (v == aspect_started && output_choice(output_started) == output_started) return output_started;
     const std::string name = aspect_shape(v);
+    if (v == aspect_started && output_choice(output_started) == output_started &&
+        dm::ratio_name(size_of(output_at(output_started))) == name) return output_started;
     if (dm::ratio_name(size_of(output_at(opts.output_res))) == name) return opts.output_res;
     uint32_t sw = 0, sh = 0;
     screen_size(&sw, &sh);

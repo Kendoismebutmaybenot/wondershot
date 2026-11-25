@@ -1617,6 +1617,7 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
             // same key)
             for (int i = 0; i < 16; i++) vrt.generic_input_types[i] = attribute_type_of(s.vattr[i]);
             vrt.previous_stage_stores.mask.set();
+            vrt.wonder_pause_clip = wonder_pause_clip_program(p.key);
             vrt.convert_depth_mode = host->depth_minus_w() != 0;
             // Deku Tree web: with DontInline, NVIDIA's compiled vertex shader substitutes the grid-origin
             // load result for the grid dimensions in the coordinate clamps. The SPIR-V names the right result.

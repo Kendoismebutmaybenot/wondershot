@@ -23,6 +23,20 @@ void ConvertDepthMode(EmitContext& ctx) {
     ctx.OpStore(ctx.output_position, vector);
 }
 
+void TransformWonderPauseClip(EmitContext& ctx) {
+    const Id type{ctx.F32[1]};
+    const Id pointer{ctx.TypePointer(spv::StorageClass::PushConstant, ctx.F32[2])};
+    const Id transform{ctx.OpLoad(ctx.F32[2], ctx.OpAccessChain(
+        pointer, ctx.rescaling_push_constants, ctx.Const(ctx.wonder_pause_clip_member_index)))};
+    const Id scale{ctx.OpCompositeExtract(type, transform, 0u)};
+    const Id bias{ctx.OpCompositeExtract(type, transform, 1u)};
+    const Id position{ctx.OpLoad(ctx.F32[4], ctx.output_position)};
+    const Id x{ctx.OpCompositeExtract(type, position, 0u)};
+    const Id w{ctx.OpCompositeExtract(type, position, 3u)};
+    const Id expanded_x{ctx.OpFAdd(type, ctx.OpFMul(type, x, scale), ctx.OpFMul(type, w, bias))};
+    ctx.OpStore(ctx.output_position, ctx.OpCompositeInsert(ctx.F32[4], expanded_x, position, 0u));
+}
+
 /// Output variable and the unscaled value it held before ScaleNoPerspectiveOutputs.
 using ScaledOutputs = std::vector<std::pair<Id, Id>>;
 
@@ -192,6 +206,9 @@ void EmitEpilogue(EmitContext& ctx) {
     if (ctx.stage == Stage::VertexB && ctx.runtime_info.convert_depth_mode &&
         !ctx.profile.support_native_ndc) {
         ConvertDepthMode(ctx);
+    }
+    if (ctx.runtime_info.wonder_pause_clip) {
+        TransformWonderPauseClip(ctx);
     }
     if (ctx.stage == Stage::VertexB || ctx.stage == Stage::TessellationEval) {
         ScaleNoPerspectiveOutputs(ctx);

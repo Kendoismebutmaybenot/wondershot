@@ -17,6 +17,22 @@
 
 namespace mkwvk {
 
+// Vertex programs used by the in-course pause controls while the pane slides.
+inline bool wonder_pause_clip_program(uint64_t key) {
+    switch (key) {
+    case 0x17eae0d5631a64d9ULL:
+    case 0x4ec3eb6f3380885fULL:
+    case 0x59d456a771f4bd6dULL:
+    case 0xa023a0f885f649f0ULL:
+    case 0xb8137d604f8f3c66ULL:
+    case 0xde55dda9ee11d53aULL:
+    case 0xf5af8e0021111a48ULL:
+        return true;
+    default:
+        return false;
+    }
+}
+
 struct Stage {
     int nvn_stage = 0;   // 0 vertex, 1 fragment, 5 compute (what its banks are read for)
     VkShaderStageFlagBits vk_stage = VK_SHADER_STAGE_VERTEX_BIT;

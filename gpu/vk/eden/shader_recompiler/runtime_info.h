@@ -92,6 +92,7 @@ struct RuntimeInfo {
     /// They are written times Position.w and the fragment stage reads them perspective-correct
     /// times FragCoord.w, so clipping a primitive close to the camera interpolates them right.
     std::bitset<32> noperspective_outputs{};
+    bool wonder_pause_clip{};
     /// Fragment stage: the previous stage writes noperspective_outputs (not a mesh program).
     bool scaled_noperspective_inputs{};
     /// Fragment stage after a mesh program that draws points: generic inputs the hardware's point sprite

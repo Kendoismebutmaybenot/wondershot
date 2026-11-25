@@ -634,7 +634,7 @@ VkFormat supported_vertex_format(VkFormat f) {
 
 // ---- pipeline layouts and pipelines ----
 // (+ the guest page table's address, a task draw's first, and the fallback's two buffer addresses)
-constexpr uint32_t kPushSize = Shader::Backend::SPIRV::MESH_FALLBACK_PUSH_END;
+constexpr uint32_t kPushSize = Shader::Backend::SPIRV::WONDER_PAUSE_CLIP_PUSH_END;
 
 void ensure_layout(Program& p) {
     if (p.layout) return;
@@ -673,7 +673,7 @@ void ensure_layout(Program& p) {
     vkCreatePipelineLayout(dev.device, &pi, nullptr, &layout);
     p.push_stages = stages;
     for (const Stage& st : p.stages) p.uses_render_area |= st.info.uses_render_area;
-    p.uses_push = p.uses_render_area;
+    p.uses_push = p.uses_render_area || wonder_pause_clip_program(p.key);
     for (const Stage& st : p.stages) p.uses_push |= st.info.uses_rescaling_uniform;
     // (the page table: compute, and (EvilOOT) the graphics stages, which follow global memory as the fallback)
     for (const Stage& st : p.stages) p.uses_push |= st.info.uses_global_memory;
@@ -4904,7 +4904,8 @@ const char* checkpoint_kind(char c) {
 thread_local uint64_t fallback_payload_address = 0, fallback_records_address = 0;   // (the draw's fallback buffers)
 thread_local uint64_t fallback_indirect_input = 0;
 
-void push_constants(VkCommandBuffer cmd, const Program& p, const Targets* at, uint32_t fallback_first = 0) {
+void push_constants(VkCommandBuffer cmd, const Program& p, const Targets* at, uint32_t fallback_first = 0,
+                    const std::array<float, 2>& pause_clip = {1.0f, 0.0f}) {
     checkpoint(cmd, p, at ? 'd' : 'c');
     {   // (frame overlap, vk_replay.cpp: each draw and dispatch counted here, where every one comes by whatever it pushes.
         // A dispatch, the mesh fallback's compute stages, and a draw whose program follows pointers through the page table
@@ -4955,6 +4956,8 @@ void push_constants(VkCommandBuffer cmd, const Program& p, const Targets* at, ui
         const float ra[4] = {(float)at->width, (float)at->height, 0.0f, 0.0f};
         std::memcpy(data + Shader::Backend::SPIRV::RENDERAREA_LAYOUT_OFFSET, ra, sizeof ra);
     }
+    if (wonder_pause_clip_program(p.key))
+        std::memcpy(data + Shader::Backend::SPIRV::WONDER_PAUSE_CLIP_PUSH_OFFSET, pause_clip.data(), 8);
     vkCmdPushConstants(cmd, p.layout, p.push_stages, 0, kPushSize, data);
 }
 
@@ -5394,7 +5397,7 @@ bool desc_slots_kept(const DescBound& k, uint64_t reg_gen) {
 }
 /// wm_sig: what the draw's program makes of the write masks (program_wm_sig)
 int dyn_pack(const NvnState& s, const Targets& at, VkPrimitiveTopology topo, bool mesh, uint64_t wm_sig, float ui_scale, float ui_left,
-             float ui_top,
+             float ui_top, bool expand_pause_clip,
              float* fp, uint32_t* up, uint8_t* raw) {
     fp[0] = s.viewport[0][0], fp[1] = s.viewport[0][1], fp[2] = s.viewport[0][2], fp[3] = s.viewport[0][3];
     fp[4] = s.depth_near, fp[5] = s.depth_far;
@@ -5409,7 +5412,7 @@ int dyn_pack(const NvnState& s, const Targets& at, VkPrimitiveTopology topo, boo
     up[10] = at.width, up[11] = at.height, up[12] = (uint32_t)at.n, up[13] = (uint32_t)at.depth_format;
     up[14] = at.depth != nullptr;
     up[15] = (uint32_t)s.color.blend_en, up[16] = s.chmask.mask;
-    up[17] = (uint32_t)topo, up[18] = mesh ? 1u : 0u;
+    up[17] = (uint32_t)topo, up[18] = (mesh ? 1u : 0u) | (expand_pause_clip ? 2u : 0u);
     up[19] = s.restart ? 1u : 0u, up[20] = s.raster_discard ? 1u : 0u, up[21] = s.depth_clamp ? 1u : 0u, up[22] = s.ms.a2c ? 1u : 0u;
     up[23] = (uint32_t)s.poly.cull, up[24] = (uint32_t)s.poly.front, up[25] = (uint32_t)s.poly.mode, up[26] = (uint32_t)s.poly.offset_en;
     for (int i = 0; i < 8; i++) up[27 + i] = (uint32_t)at.color_format[i];
@@ -5460,7 +5463,8 @@ static bool wonder_panel(const NvnState& s, const Program& p) {
     if (!uniform.addr || uniform.size < 0x40 + sizeof model ||
         !ub_read(uniform.addr + 0x40, model, sizeof model)) return false;
     const float x = model[3], y = model[7];
-    if (strip) return std::abs(x) < 20.0f && y > 335.0f && y < 390.0f && std::abs(model[1] + 0.08716f) < 0.001f;
+    // The stripe moves vertically as the main menu slides in and out.
+    if (strip) return std::abs(x) < 20.0f && y > 335.0f && std::abs(model[1] + 0.08716f) < 0.001f;
     if (backdrop) return x == 0.0f && y == 0.0f && model[0] == 1.0f && model[5] == 1.0f;
     // The course intro's footer starts at the lower edge of the 1080-unit canvas.
     return x == 0.0f && y == -540.0f;
@@ -5472,8 +5476,18 @@ static bool wonder_panel(const NvnState& s, const Program& p) {
 static float wonder_ui_scale(const NvnState& s, const Targets& at, const Program& p) {
     if (!wonder_native_ui_target(at)) return 1.0f;
     switch (p.key) {
+    case 0x4700efac4017f0a2ULL: // menu profile badge background
+        if (!wonder_sampled_size(0, 16, 16) || !wonder_sampled_size(1, 1920, 2)) return 1.0f;
+        break;
+    case 0xfc83575fd66091b9ULL: // menu card fills and shadows
+        if (!wonder_sampled_size(1, 2, 2)) return 1.0f;
+        break;
+    case 0x9e9aa65dde5f8e57ULL: // patterned menu card faces
+        if (!wonder_sampled_size(1, 16, 16)) return 1.0f;
+        break;
     case 0x17eae0d5631a64d9ULL: // pictures and icons
     case 0x76644328dc442686ULL:
+    case 0x3f7f4a399c2f5236ULL: // button and icon outlines during the menu fade
     case 0x46cbdd20fb67741aULL:
     case 0x74927aefe950d3efULL: // menu title label backplate
     case 0x443b1998ab8811c6ULL: // pause and main menu labels
@@ -5491,10 +5505,11 @@ static float wonder_ui_scale(const NvnState& s, const Targets& at, const Program
     case 0x4ec3eb6f3380885fULL:
     case 0x3678d4e334c59348ULL: // course title glyphs
     case 0xf71d3090df626f8aULL: // cached text shadows
-        return wonder_panel(s, p) ? 1.0f : (at.height * (16.0f / 9.0f)) / at.width;
+        break;
     default:
         return 1.0f;
     }
+    return wonder_panel(s, p) ? 1.0f : (at.height * (16.0f / 9.0f)) / at.width;
 }
 
 static bool wonder_top_left_hud(Pass& ps, const NvnState& s, const Targets& at, const Program& p) {
@@ -5528,7 +5543,8 @@ static bool wonder_top_left_hud(Pass& ps, const NvnState& s, const Targets& at, 
 }
 
 /// p: the draw's program, for its dynamic write masks and layout viewport
-void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, bool mesh, const Program& p) {
+void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, bool mesh,
+                   const Program& p, std::array<float, 2>& pause_clip) {
     Pass& ps = pass();   // (once: the accessor is a call and a thread-local read at each use. The same object for the thread's life: draw_begin_recording resets it in place)
     CmdBound& cb = bound();   // (once, as the pass)
     float df[kDynF];
@@ -5546,7 +5562,23 @@ void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, Vk
     const bool top_left_hud = ui_scale != 1.0f && wonder_top_left_hud(ps, s, at, p);
     const float ui_left = top_left_hud ? 0.0f : at.width * (1.0f - ui_x) * 0.5f + ui_shift;
     const float ui_top = top_left_hud ? 0.0f : at.height * (1.0f - ui_y) * 0.5f;
-    const int nb = dyn_pack(s, at, topo, mesh, program_wm_sig(p), ui_scale, ui_left, ui_top, df, du, db);
+    float vx = s.viewport[0][0], vy = s.viewport[0][1], vw = s.viewport[0][2], vh = s.viewport[0][3];
+    if (vw == 0.0f && vh == 0.0f) vx = 0, vy = 0, vw = (float)at.width, vh = (float)at.height;
+    vx = vx * ui_x + ui_left;
+    vy = vy * ui_y + ui_top;
+    vw *= ui_x;
+    vh *= ui_y;
+    const bool expand_pause_clip = ui_shift < 0.0f && !top_left_hud && vx > 0.0f &&
+                                   wonder_pause_clip_program(p.key);
+    if (expand_pause_clip) {
+        // Widen clip space to the screen edge while retaining each vertex's screen position.
+        const float expanded_width = vw + vx;
+        pause_clip = {vw / expanded_width, vx / expanded_width};
+        vx = 0.0f;
+        vw = expanded_width;
+    }
+    const int nb = dyn_pack(s, at, topo, mesh, program_wm_sig(p), ui_scale, ui_left, ui_top,
+                            expand_pause_clip, df, du, db);
     if (!dump_on() && cb.dyn_valid && cb.dyn_fast.on && cb.dyn_fast.nb == nb &&
         dyn_same(df, kDynF, du, kDynU, db, nb, cb.dyn_fast.fp, cb.dyn_fast.up, cb.dyn_fast.raw)) {
         ps.wm_or |= cb.dyn_fast.wm0, ps.wm_n = cb.dyn_fast.wm_n;   // (the pass trace still sees the masks)
@@ -5572,12 +5604,6 @@ void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, Vk
     const bool fp = dump_on() && at.depth && depth_aspect(at.depth_format) && !footprint.empty() &&
                     std::find(footprint.begin(), footprint.end(), p.key) != footprint.end();
     // the viewport upside down (negative height): NVN's NDC has +y up, Vulkan's down
-    float vx = s.viewport[0][0], vy = s.viewport[0][1], vw = s.viewport[0][2], vh = s.viewport[0][3];
-    if (vw == 0.0f && vh == 0.0f) vx = 0, vy = 0, vw = (float)at.width, vh = (float)at.height;
-    vx = vx * ui_x + ui_left;
-    vy = vy * ui_y + ui_top;
-    vw *= ui_x;
-    vh *= ui_y;
     d.vp = {vx, vy + vh, vw, -vh, std::clamp(s.depth_near, 0.0f, 1.0f), std::clamp(s.depth_far, 0.0f, 1.0f)};
     d.sc = {{0, 0}, {at.width, at.height}};
     if (s.scissor[2] > 0 && s.scissor[3] > 0) {
@@ -5586,7 +5612,9 @@ void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, Vk
         const int32_t y1 = std::min<int32_t>(s.scissor[1] + s.scissor[3], (int32_t)at.height);
         d.sc = {{x0, y0}, {(uint32_t)std::max(0, x1 - x0), (uint32_t)std::max(0, y1 - y0)}};
         if (ui_scale != 1.0f) {
-            const int32_t left = std::max(0l, std::lround(x0 * ui_x + ui_left));
+            // Pause controls slide in from the framebuffer edge, outside the centred canvas.
+            const int32_t left = expand_pause_clip && x0 == 0 ? 0 :
+                                 std::max(0l, std::lround(x0 * ui_x + ui_left));
             const int32_t right = std::max(0l, std::lround((x0 + d.sc.extent.width) * ui_x + ui_left));
             const int32_t top = (int32_t)std::lround(y0 * ui_y + ui_top);
             const int32_t bottom = (int32_t)std::lround((y0 + d.sc.extent.height) * ui_y + ui_top);
@@ -8797,7 +8825,8 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         return false;
     }();
     const bool native_ui = (p.key == 0x17eae0d5631a64d9ULL || p.key == 0xdb4df6bed55689e8ULL ||
-                            p.key == 0xfc83575fd66091b9ULL) &&
+                            p.key == 0xfc83575fd66091b9ULL || p.key == 0x9e9aa65dde5f8e57ULL ||
+                            p.key == 0x4700efac4017f0a2ULL) &&
                            wonder_native_ui_target(at);
     const bool need_writer = p.fallback || native_ui;
     const bool same_desc = !no_reuse && !early_rebind && cb.desc.valid && cb.desc.prog == &p &&
@@ -8929,11 +8958,11 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         begin_pass(cmd, at);
     }
     const bool ultrawide = native_ui && at.width * 9 > at.height * 16;
-    // The lobby draws the header immediately after its blurred map. Course
-    // pause draws its side panel here instead and keeps the level backdrop.
-    const bool lobby_background = ultrawide && p.key == 0xdb4df6bed55689e8ULL &&
-                                  ps.draws && ps.prog == 0xad0d9c6df3c43c99ULL &&
-                                  wonder_sampled_size(0, 16, 16) && wonder_sampled_size(1, 2, 2) &&
+    // The lobby ribbon follows the backdrop even on frames that still draw
+    // the live map. Course pause has no ribbon and keeps the level backdrop.
+    const bool lobby_background = ultrawide && p.key == 0x17eae0d5631a64d9ULL &&
+                                  ps.draws && ps.prog == 0xdb4df6bed55689e8ULL &&
+                                  wonder_sampled_size(0, 8, 8) && wonder_panel(s, p) &&
                                   wonder_lobby_background(cmd, at);
     if (ultrawide && p.key == 0xfc83575fd66091b9ULL &&
         wonder_sampled_size(0, 2, 2) && wonder_sampled_size(1, 640, 640))
@@ -8976,10 +9005,6 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     } else {
         st_desc_reused++;
     }
-    {
-        FINE_SCOPE(FT_PUSHC);
-        push_constants(cmd, p, &at);
-    }
     if (watched(p.key)) {   // (RX_VK_WATCH_PROG: the draw's state, 80 lines)
         static std::atomic<int> n{0};
         if (n++ < 80) {
@@ -8997,9 +9022,14 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
             logf("%s", line);
         }
     }
+    std::array<float, 2> pause_clip{1.0f, 0.0f};
     {
         FINE_SCOPE(FT_DYN);
-        dynamic_state(cmd, s, at, topo, d.mesh && !p.fallback, p);
+        dynamic_state(cmd, s, at, topo, d.mesh && !p.fallback, p, pause_clip);
+    }
+    {
+        FINE_SCOPE(FT_PUSHC);
+        push_constants(cmd, p, &at, 0, pause_clip);
     }
     if (trace_tex_hit && texture_frame_no() % 30 == 0) {
         static std::atomic<int> told{0};

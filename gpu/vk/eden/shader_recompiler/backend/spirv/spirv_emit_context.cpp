@@ -597,6 +597,9 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
     DefineAttributeMemAccess(program.info);
     DefineWriteStorageCasLoopFunction(program.info);
     DefineGlobalMemoryFunctions(program.info);
+    if (runtime_info.wonder_pause_clip) {
+        DefineRescalingInputPushConstant();
+    }
     DefineRescalingInput(program.info);
     DefineRenderArea(program.info);
 }
@@ -1708,9 +1711,18 @@ void EmitContext::DefineRescalingInputPushConstant() {
             mesh_fallback_indirect_input_member_index = member_index++;
         }
     }
+    if (runtime_info.wonder_pause_clip) {
+        members.push_back(F32[2]);
+        wonder_pause_clip_member_index = member_index++;
+    }
     const Id push_constant_struct{TypeStruct(std::span(members.data(), members.size()))};
     Decorate(push_constant_struct, spv::Decoration::Block);
     Name(push_constant_struct, "ResolutionInfo");
+    if (runtime_info.wonder_pause_clip) {
+        MemberDecorate(push_constant_struct, wonder_pause_clip_member_index, spv::Decoration::Offset,
+                       WONDER_PAUSE_CLIP_PUSH_OFFSET);
+        MemberName(push_constant_struct, wonder_pause_clip_member_index, "wonder_pause_clip");
+    }
 
     MemberDecorate(push_constant_struct, rescaling_textures_member_index, spv::Decoration::Offset,
                    static_cast<u32>(offsetof(RescalingLayout, rescaling_textures)));

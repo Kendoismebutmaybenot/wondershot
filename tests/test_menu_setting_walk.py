@@ -63,8 +63,8 @@ bool host_screen_size(uint32_t*, uint32_t*) { return false; }
 #define CHECK(x, ...) do { if (!(x)) { std::fprintf(stderr, "FAIL %d: %s: ", __LINE__, #x); std::fprintf(stderr, __VA_ARGS__); std::fputc('\n', stderr); failed = 1; } } while (0)
 /* OUTPUTS */
 dm::Size size_of(Out o) { return {o.w, o.h}; }   // (vk_menu.cpp's, after the part cut out)
-// (the shape the arrows walk: the size's own; the monitor's shape for a 16:9 size kept at it is test_output_resolution's)
-std::string step_shape(int id) { return dm::ratio_name(size_of(output_at(id))); }
+struct { int ultrawide; } opts;
+std::string aspect_shape(int id) { return dm::ratio_name(size_of(output_at(id))); }
 // (the size each choice shows: its own here, no screen to widen a 16:9 one to)
 Out picture_for(int v, bool*) { return output_at(output_choice(v)); }
 /* STEP_OUTPUT */
@@ -101,6 +101,7 @@ bool set(Row& r, int want) {   // (menu_setting_set's call)
                 (to < 0 || (uint64_t)output_at(v).w * output_at(v).h > (uint64_t)output_at(to).w * output_at(to).h)) to = v;
         output = to;
     }
+    opts.ultrawide = output;   // The fixture represents each aspect by a resolution of that shape.
     const auto native = [&] { return r.value == &resolution && ur::full_scale(upscaler()); };
     const bool ok = walk_to([&] { return std::pair(native() ? -1 : *r.value, dlss); }, [&] { return *r.value == want && !native(); },
                             [&](int dir) { set_row(r, *r.value + dir, dir); }, 64);

@@ -4665,7 +4665,6 @@ void outputs_follow_screen() {
         return -1;
     }();
     // (the shapes the row's values name now: the same shapes after the list grows)
-    const bool at_monitor = opts.ultrawide == aspect_monitor_value();
     const std::string now = aspect_shape(opts.ultrawide), started = aspect_shape(aspect_started),
                       restart_from = slot >= 0 ? aspect_shape(restart_state.start[slot]) : std::string();
     std::vector<dm::Size> modes = screen_modes();
@@ -4685,7 +4684,7 @@ void outputs_follow_screen() {
             if (r.value == &opts.output_res) r.hi = last_choice();
             if (r.value == &opts.ultrawide) r.hi = aspect_last();
         }
-        opts.ultrawide = at_monitor && !monitor_shape().empty() ? aspect_index(monitor_shape()) : aspect_index(now);
+        opts.ultrawide = aspect_index(now);
         aspect_started = aspect_index(started);
         if (slot >= 0) restart_state.restart_value(slot, aspect_index(restart_from));
         menu_refresh = true;
