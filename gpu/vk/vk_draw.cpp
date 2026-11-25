@@ -5121,6 +5121,8 @@ void checkpoints_report() {
 namespace {
 
 // ---- the open render pass ----
+enum class WonderLobbyDraw { Other, Map, Header };
+
 struct Pass {
     bool open = false;
     VkImageView color[8]{};
@@ -5144,6 +5146,8 @@ struct Pass {
     uint16_t written = 0;                  // (its targets written so far: colour i bit i, depth bit 8)
     float wonder_pause_left = 0.0f;
     bool wonder_hud_badge = false;
+    // The map downsample can end one pass before the lobby header starts another.
+    WonderLobbyDraw wonder_lobby_draw = WonderLobbyDraw::Other;
 };
 TLS_OBJECT(pass, Pass)
 /// (vk_replay.cpp maybe_split) whether this thread's command buffer is inside a render pass: a part that ends with none open
@@ -8958,12 +8962,23 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         begin_pass(cmd, at);
     }
     const bool ultrawide = native_ui && at.width * 9 > at.height * 16;
-    // The lobby ribbon follows the backdrop even on frames that still draw
-    // the live map. Course pause has no ribbon and keeps the level backdrop.
+    // The root menu draws its header directly after the map, including the
+    // frame that captures it for blur. Submenus also draw a ribbon, but only
+    // after drawing their own contents. Inserting an opaque backdrop there
+    // would cover that content.
     const bool lobby_background = ultrawide && p.key == 0x17eae0d5631a64d9ULL &&
-                                  ps.draws && ps.prog == 0xdb4df6bed55689e8ULL &&
+                                  ps.wonder_lobby_draw == WonderLobbyDraw::Header &&
                                   wonder_sampled_size(0, 8, 8) && wonder_panel(s, p) &&
                                   wonder_lobby_background(cmd, at);
+    const bool lobby_header = ultrawide && p.key == 0xdb4df6bed55689e8ULL &&
+                              ps.wonder_lobby_draw == WonderLobbyDraw::Map &&
+                              wonder_sampled_size(0, 16, 16) && wonder_sampled_size(1, 2, 2);
+    const bool lobby_map =
+        (p.key == 0xb37500e0e1cae0f5ULL && at.width == 480 && at.height == 270) ||
+        (p.key == 0xad0d9c6df3c43c99ULL && wonder_native_ui_target(at)) ||
+        (ultrawide && p.key == 0x17eae0d5631a64d9ULL && wonder_sampled_size(0, 82, 61));
+    ps.wonder_lobby_draw = lobby_header ? WonderLobbyDraw::Header :
+                          lobby_map ? WonderLobbyDraw::Map : WonderLobbyDraw::Other;
     if (ultrawide && p.key == 0xfc83575fd66091b9ULL &&
         wonder_sampled_size(0, 2, 2) && wonder_sampled_size(1, 640, 640))
         wonder_place_pause_controls(ps, at);
