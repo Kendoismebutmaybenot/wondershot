@@ -110,7 +110,6 @@ sealed class Runner
         p.ErrorDataReceived += (_, e) => Take(e.Data);
         p.BeginOutputReadLine();
         p.BeginErrorReadLine();
-        p.EnableRaisingEvents = true;
         p.Exited += (_, _) =>
         {
             p.WaitForExit();   // (the last lines read before this ends)
@@ -119,6 +118,7 @@ sealed class Runner
             Finished?.Invoke(cancelled ? "cancelled" : p.ExitCode == 0 ? null
                 : error ?? $"The build stopped (exit code {p.ExitCode}). Its last lines:\n\n{last}");
         };
+        p.EnableRaisingEvents = true;
     }
 
     /// Stops the build and everything it started (the compilers)

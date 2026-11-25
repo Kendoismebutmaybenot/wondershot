@@ -76,8 +76,9 @@ def package(a):
             return 1
         os.makedirs(os.path.join(dest, "third_party", "renhdrum"), exist_ok=True)
         shutil.copyfile(dll, os.path.join(dest, "third_party", "renhdrum", "renhdrum.dll"))
-    with open(os.path.join(dest, "version.txt"), "w", encoding="utf-8") as f:
-        f.write((a.version or "dev") + "\n")
+    for stamp in (os.path.join(dest, "version.txt"), os.path.join(out, "builder_version.txt")):
+        with open(stamp, "w", encoding="utf-8") as f:
+            f.write((a.version or "dev") + "\n")
     print("package folder: %s (%d source files)" % (out, total))
     if a.zip:
         make_zip(out, a.zip)

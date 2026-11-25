@@ -5,6 +5,7 @@
     python -I nx2/make_wonder.py --game <.nup or folder> --out <folder> [--work <folder>] [--tools <folder>] [--jobs <n>]
                                  [--game-files link|copy]
     python -I nx2/make_wonder.py --check-update                      (is there a newer Wondershot release on GitHub?)
+    python -I nx2/make_wonder.py --update-builder <tag>              (install and report the new Builder app's path)
     ... --update-to <tag> --update-url <url>                         (with a build: the release's sources first, then what changed)
     python -I nx2/make_wonder.py --hdr-only --out <folder>            (only the HDR shaders, for a folder built already)
 
@@ -21,6 +22,8 @@ own line of stdout:
     @@eta <seconds>          the compile's time left
     @@check <ok|bad> <text>  (--check) the answer
     @@update <available|current|dev|unknown> <tag> <url>   (--check-update) the answer
+    @@builder-update <tag>  (--check-update) a newer Builder app is available
+    @@builder-ready <exe>   (--update-builder) the new Builder app
     @@done <folder>          finished
     @@error <text>           stopped
 """
@@ -165,16 +168,20 @@ REPO = "Kendoismebutmaybenot/wondershot"
 UPDATE_DIRS = ("gpu", "host", "nx2", "scripts", "third_party", "assets/profiles", "assets/pipeline_states", "builder/setup")
 UPDATE_FILES = ("tools.lock", "requirements.txt", "LICENSE", "README.md")
 UPDATE_HOSTS = ("api.github.com", "github.com", "codeload.github.com")
-UPDATE_MAX = 600 << 20   # (a release's sources are tens of MB: more than this is not one)
+UPDATE_MAX = 600 << 20   # cap downloads for both source archives and Builder packages
+BUILDER_TAG = re.compile(r"v\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.?\d+)?")
 
 
-def installed_version(tools):
-    """The release these tools are (tools/version.txt, written by the package and by an update); "dev" from a checkout"""
+def read_version(path):
     try:
-        with open(os.path.join(tools, "version.txt"), encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return f.readline().strip() or "dev"
     except OSError:
         return "dev"
+
+
+def installed_version(tools):
+    return read_version(os.path.join(tools, "version.txt"))
 
 
 PRE_STAGES = ("alpha", "beta", "rc")   # (a pre-release's kinds, in order: v1.0.0-alpha2 < -beta1 < -rc1 < v1.0.0)
@@ -209,10 +216,32 @@ def github_json(url):
         return json.load(r)
 
 
+def builder_release(app):
+    if not os.path.isfile(os.path.join(app, "WondershotBuilder.exe")):
+        return "dev"
+    return read_version(os.path.join(app, "builder_version.txt"))
+
+
+def builder_asset(release):
+    tag = release.get("tag_name", "")
+    if release.get("draft") or not isinstance(tag, str) or not BUILDER_TAG.fullmatch(tag):
+        return None
+    name = "WondershotBuilder-%s.zip" % tag
+    url = "https://github.com/%s/releases/download/%s/%s" % (REPO, tag, name)
+    for asset in release.get("assets", []):
+        digest, size = asset.get("digest") or "", asset.get("size")
+        if (asset.get("name") == name and asset.get("state") == "uploaded" and asset.get("browser_download_url") == url
+                and isinstance(digest, str) and re.fullmatch(r"sha256:[a-f0-9]{64}", digest)
+                and type(size) is int and 0 < size <= UPDATE_MAX):
+            return url, digest[7:], size
+    return None
+
+
 def check_update(tools):
     """@@update available <tag> <sources url> | current <tag> | dev | unknown <why>: a newer release of the port than this one?"""
     have = installed_version(tools)
-    if have == "dev":
+    app_version = builder_release(os.path.dirname(tools))
+    if have == app_version == "dev":
         say("@@update", "dev")
         return
     try:
@@ -227,17 +256,92 @@ def check_update(tools):
     except (OSError, ValueError) as error:
         say("@@update", "unknown", str(error).replace("\n", " "))
         return
-    tag, url = "", ""
+    tag, url, app_tag = "", "", ""
     for release in releases if isinstance(releases, list) else []:
         t, u = str(release.get("tag_name", "")), str(release.get("zipball_url", ""))
-        if release.get("draft") or not t or not u or version_key(t) is None:
+        if release.get("draft") or not t or version_key(t) is None:
             continue
-        if not tag or version_key(t) > version_key(tag):
+        if u and (not tag or newer(t, tag)):
             tag, url = t, u
-    if tag and url and newer(tag, have):
+        if app_version != "dev" and newer(t, app_tag or app_version) and builder_asset(release):
+            app_tag = t
+    if app_tag:
+        say("@@builder-update", app_tag)
+    if have == "dev":
+        say("@@update", "dev")
+    elif tag and url and newer(tag, have):
         say("@@update", "available", tag, url)
     else:
         say("@@update", "current", have)
+
+
+def extract_builder(archive, dest):
+    """Unpack the package's single top folder into an empty staging directory."""
+    import ntpath
+    import stat
+
+    with zipfile.ZipFile(archive) as package:
+        entries = package.infolist()
+        if not entries or sum(e.file_size for e in entries) > 2 * UPDATE_MAX:
+            raise ValueError("The Builder ZIP is empty or expands beyond the update size limit.")
+        root = entries[0].filename.split("/")[0]
+        for entry in entries:
+            parts = entry.filename.rstrip("/").split("/")
+            if (parts[0] != root or any(not p or p in (".", "..") or "\\" in p or ntpath.isreserved(p) for p in parts)
+                    or stat.S_ISLNK(entry.external_attr >> 16) or (len(parts) == 1 and not entry.is_dir())):
+                raise ValueError("The Builder ZIP has an invalid file path.")
+            target = os.path.join(dest, *parts[1:])
+            if entry.is_dir():
+                os.makedirs(target, exist_ok=True)
+            else:
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                with package.open(entry) as source, open(target, "xb") as output:
+                    shutil.copyfileobj(source, output)
+
+
+def install_builder(tools, tag):
+    from tempfile import TemporaryDirectory
+    from urllib.parse import urlparse
+
+    app = os.path.dirname(tools)
+    have = builder_release(app)
+    if have == "dev" or not BUILDER_TAG.fullmatch(tag) or not newer(tag, have):
+        raise ValueError("This is not a newer packaged Wondershot Builder release.")
+    release = github_json("https://api.github.com/repos/%s/releases/tags/%s" % (REPO, tag))
+    asset = builder_asset(release) if release.get("tag_name") == tag else None
+    if asset is None:
+        raise ValueError("GitHub has no verified Builder ZIP for %s." % tag)
+    url, expected_hash, size = asset
+    root = os.path.dirname(app)
+    if os.path.basename(root) != "WondershotBuilder-updates":
+        root = os.path.join(root, "WondershotBuilder-updates")
+    os.makedirs(root, exist_ok=True)
+    with TemporaryDirectory(prefix="download-", dir=root) as temp:
+        archive = os.path.join(temp, "builder.zip")
+        req = urllib.request.Request(url, headers={"User-Agent": "WondershotBuilder"})
+        digest, got = hashlib.sha256(), 0
+        with urllib.request.urlopen(req, timeout=60) as response, open(archive, "wb") as output:
+            address = urlparse(response.geturl())
+            if address.scheme != "https" or address.hostname not in ("github.com", "release-assets.githubusercontent.com",
+                                                                       "objects.githubusercontent.com"):
+                raise ValueError("The Builder ZIP download left GitHub.")
+            while chunk := response.read(1 << 20):
+                got += len(chunk)
+                if got > size:
+                    raise ValueError("The Builder ZIP is larger than GitHub reported.")
+                digest.update(chunk)
+                output.write(chunk)
+        if got != size or digest.hexdigest() != expected_hash:
+            raise ValueError("The Builder ZIP did not match GitHub's SHA-256 and size.")
+        staged = os.path.join(temp, "unpacked")
+        extract_builder(archive, staged)
+        needed = ("WondershotBuilder.dll", "WondershotBuilder.runtimeconfig.json", "tools/python/python.exe", "tools/nx2/make_wonder.py")
+        if (builder_release(staged) != tag or installed_version(os.path.join(staged, "tools")) != tag
+                or not all(os.path.isfile(os.path.join(staged, p)) for p in needed)):
+            raise ValueError("The ZIP does not contain a complete Builder for %s." % tag)
+        dest = os.path.join(root, "%s-%s" % (tag, os.path.basename(temp).removeprefix("download-")))
+        os.rename(staged, dest)
+    say("@@builder-ready", os.path.join(dest, "WondershotBuilder.exe"))
 
 
 def apply_update(tools, tag, url):
@@ -822,6 +926,7 @@ def main():
     ap.add_argument("--jobs", type=int, default=0)
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--check-update", action="store_true")
+    ap.add_argument("--update-builder")
     ap.add_argument("--game-files", choices=("link", "copy"), default="link",
                     help="link: the game folder reads the dump where it is; copy: romfs and dlc are copied into the folder")
     ap.add_argument("--hdr-only", action="store_true", help="only make shader_overrides/hdr for the --out folder (built already)")
@@ -832,6 +937,12 @@ def main():
     work = a.work or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "WondershotBuilder", "work")
     if a.check_update:
         check_update(tools)
+        return 0
+    if a.update_builder:
+        try:
+            install_builder(os.path.abspath(tools), a.update_builder)
+        except (OSError, ValueError, zipfile.BadZipFile) as error:
+            fail("The Builder update could not be installed: %s" % error)
         return 0
     if a.hdr_only:
         if not a.out or not os.path.isfile(os.path.join(a.out, EXE)):

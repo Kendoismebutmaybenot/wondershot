@@ -8,6 +8,13 @@
 > stay where they are (the game folder links to them) or be copied into the game folder, which then stands alone; the builder asks. The app is
 > `builder/WondershotBuilder` (WPF, .NET 8); `scripts/wonder_builder_package.py` makes its folder and zip.
 
+By default, the Builder reuses `WondershotBuilder\work` inside the selected dump folder or next to the selected `.nup` for builds
+and updates. Clear **Store the build workspace with the source game** to use `%LOCALAPPDATA%\WondershotBuilder\work`.
+If you use linked game files with a `.nup`, keep the workspace's `dump` folder in place so the installed game can read its assets.
+
+When **Update Builder app** appears, it downloads the new Builder, installs it in a sibling `WondershotBuilder-updates` folder and
+opens it. The previous Builder stays available. **Update Wondershot** rebuilds the playable game.
+
 Wondershot is a static recompilation of **Super Mario Bros. Wonder – Nintendo Switch 2 Edition** for PC, built on
 [Longshot](https://git.magicbean.dev/MagicBeanDev/Longshot) by MagicBeanDev. It statically recompiles the game's own code
 for the PC, so you need your own legally dumped copy of the game. **No game files are included here, and none ever will be.**

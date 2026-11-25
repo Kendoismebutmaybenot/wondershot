@@ -39,6 +39,8 @@
                 <!-- the steps, as the menu's left-hand list -->
                 <DockPanel Grid.Column="0" Margin="30,22,10,22">
                     <StackPanel DockPanel.Dock="Bottom">
+                        <Button x:Name="BuilderUpdateButton" Visibility="Collapsed" Content="Update Builder app"
+                                Style="{StaticResource GlassButton}" Margin="0,0,0,10" Click="BuilderUpdate_Click"/>
                         <Border x:Name="UpdatePill" Visibility="Collapsed" CornerRadius="6" Padding="12,9" Margin="0,0,0,12" Background="#401F58D2" BorderBrush="#B34E86EC" BorderThickness="1" Cursor="Hand" MouseLeftButtonUp="UpdatePill_Click">
                             <StackPanel>
                                 <TextBlock x:Name="UpdateTitle" Text="Update available" FontWeight="SemiBold" FontSize="13" Foreground="White"/>
@@ -152,7 +154,7 @@
                                     <ColumnDefinition Width="*"/>
                                 </Grid.ColumnDefinitions>
                                 <RadioButton x:Name="FilesLink" GroupName="gamefiles" IsChecked="True" Style="{StaticResource ChoiceCard}"
-                                             ToolTip="The game folder reads your dump where it is, through a link. Nothing is copied, so don't move or delete the dump (for a .nup, the builder's own work folder holds it).">
+                                             ToolTip="The game folder reads your dump through a link. Keep the dump in place. For a .nup build, keep the extracted files in the build workspace.">
                                     <StackPanel>
                                         <TextBlock Text="Keep them where they are" FontWeight="SemiBold" FontSize="13.5"/>
                                         <TextBlock Text="Linked: no extra space. Don't move the dump." FontSize="11.5" Foreground="{StaticResource DimBrush}" TextWrapping="NoWrap"/>
@@ -166,6 +168,12 @@
                                     </StackPanel>
                                 </RadioButton>
                             </Grid>
+                            <TextBlock Text="BUILD WORKSPACE" Style="{StaticResource SectionLabel}" Margin="2,12,0,6"/>
+                            <CheckBox x:Name="PortableWorkspace" Content="Store the build workspace with the source game" IsChecked="True" Margin="2,0,0,0"
+                                      Foreground="{StaticResource SoftBrush}" FontSize="13.5" Click="PortableWorkspace_Click"
+                                      ToolTip="Keeps the files used for recompilation on the source game's drive. This workspace is reused for updates."/>
+                            <TextBlock x:Name="WorkspaceText" Margin="2,4,0,0" FontSize="11.5" Foreground="{StaticResource DimBrush}"
+                                       TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
                         </StackPanel>
 
                         <DockPanel Grid.Row="3" LastChildFill="False">

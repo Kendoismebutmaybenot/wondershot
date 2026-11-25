@@ -28,8 +28,9 @@ sealed class Step : INotifyPropertyChanged
 
 public partial class MainWindow : Window
 {
-    sealed record Settings(string? Game, string? Out, bool Copy = false);
+    sealed record Settings(string? Game, string? Out, bool Copy = false, bool PortableWorkspace = true);
 
+    const string DefaultWorkspace = @"%LOCALAPPDATA%\WondershotBuilder\work";
     static readonly string SettingsPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WondershotBuilder", "settings.json");
 
@@ -74,12 +75,14 @@ public partial class MainWindow : Window
     string? builtFolder;
     string? buildWarning;   // (a step that did not finish but left a working game: "@@warn <text>", shown on the Done page)
     string? updateTag, updateUrl;   // (a newer release of the port than this install: its tag and its sources on GitHub)
+    string? builderUpdateTag;
+    bool updatingBuilder;
 
     public MainWindow()
     {
         InitializeComponent();
         StepList.ItemsSource = steps;
-        VersionText.Text = "Wondershot Builder " + (typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "");
+        VersionText.Text = "Wondershot Builder " + AppVersion();
         outDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Games", "Wondershot");
         try
         {
@@ -87,11 +90,13 @@ public partial class MainWindow : Window
             {
                 if (!string.IsNullOrWhiteSpace(s.Out)) outDir = s.Out;
                 if (s.Copy) FilesCopy.IsChecked = true;
+                PortableWorkspace.IsChecked = s.PortableWorkspace;
                 if (!string.IsNullOrWhiteSpace(s.Game) && (Directory.Exists(s.Game) || File.Exists(s.Game))) game = s.Game;
             }
         }
         catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException) { }
         OutText.Text = outDir;
+        RefreshWorkspacePath();
         DragOver += (_, e) => { var ok = e.Data.GetDataPresent(DataFormats.FileDrop); e.Effects = ok ? DragDropEffects.Copy : DragDropEffects.None; DropGlow.Visibility = ok ? Visibility.Visible : Visibility.Collapsed; e.Handled = true; };
         DragLeave += (_, _) => DropGlow.Visibility = Visibility.Collapsed;
         Drop += OnDrop;
@@ -102,11 +107,23 @@ public partial class MainWindow : Window
         CheckForUpdate();
     }
 
+    static string AppVersion()
+    {
+        try
+        {
+            var version = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "builder_version.txt")).Trim();
+            if (version.Length > 0) return version;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        return typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "";
+    }
+
     // ---- the window ----
     void Banner_Drag(object sender, MouseButtonEventArgs e) { if (e.ButtonState == MouseButtonState.Pressed) DragMove(); }
     void Minimize_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
     void Close_Click(object sender, RoutedEventArgs e)
     {
+        if (updatingBuilder) return;
         if (building && MessageBox.Show(this, "The build is still running. Stop it and close?", "Wondershot Builder", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
         runner?.Cancel();
         Close();
@@ -116,7 +133,7 @@ public partial class MainWindow : Window
     void OnDrop(object sender, DragEventArgs e)
     {
         DropGlow.Visibility = Visibility.Collapsed;
-        if (building || e.Data.GetData(DataFormats.FileDrop) is not string[] files || files.Length == 0) return;
+        if (building || updatingBuilder || e.Data.GetData(DataFormats.FileDrop) is not string[] files || files.Length == 0) return;
         UseGame(files[0]);
     }
 
@@ -135,6 +152,7 @@ public partial class MainWindow : Window
     void UseGame(string path)
     {
         game = path;
+        RefreshWorkspacePath();
         gameOk = false;
         BuildButton.IsEnabled = false;
         DropTitle.Text = Path.GetFileName(path.TrimEnd('\\', '/')) is { Length: > 0 } n ? n : path;
@@ -192,6 +210,39 @@ public partial class MainWindow : Window
         RefreshInstalled();
     }
 
+    static string WorkspacePath(string source)
+    {
+        var fullPath = Path.GetFullPath(source);
+        var sourceFolder = Directory.Exists(fullPath) ? fullPath : Path.GetDirectoryName(fullPath)!;
+        return Path.Combine(sourceFolder, "WondershotBuilder", "work");
+    }
+
+    void RefreshWorkspacePath()
+    {
+        var path = DefaultWorkspace;
+        if (PortableWorkspace.IsChecked == true)
+            path = game == null ? "Choose your game to see the workspace path." : WorkspacePath(game);
+        WorkspaceText.Text = path;
+        WorkspaceText.ToolTip = path;
+    }
+
+    void PortableWorkspace_Click(object sender, RoutedEventArgs e)
+    {
+        RefreshWorkspacePath();
+        SaveSettings();
+    }
+
+    void SaveSettings()
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
+            File.WriteAllText(SettingsPath, JsonSerializer.Serialize(new Settings(
+                game, outDir, FilesCopy.IsChecked == true, PortableWorkspace.IsChecked == true)));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+    }
+
     // ---- the build ----
     void Page(string which)
     {
@@ -211,15 +262,16 @@ public partial class MainWindow : Window
 
     void StartBuild(params string[] extra)
     {
-        if (tools == null || game == null || !gameOk) return;
-        try
-        {
-            Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
-            File.WriteAllText(SettingsPath, JsonSerializer.Serialize(new Settings(game, outDir, FilesCopy.IsChecked == true)));
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        if (tools == null || game == null || !gameOk || updatingBuilder) return;
+        var copy = FilesCopy.IsChecked == true;
+        var portable = PortableWorkspace.IsChecked == true;
+        var work = portable ? WorkspacePath(game) : null;
+        var args = new List<string> { "--game", game, "--out", outDir, "--game-files", copy ? "copy" : "link" };
+        if (work != null) args.AddRange(["--work", work]);
+        args.AddRange(extra);
+        SaveSettings();
         log.Clear();
-        OpenLogFile();
+        OpenLogFile(work ?? DefaultWorkspace);
         buildWarning = null;
         LogBox.Clear();
         Bar.Value = 0;
@@ -230,14 +282,14 @@ public partial class MainWindow : Window
         steps[1].State = 1; steps[1].Sub = "Starting…"; steps[2].State = 0; steps[3].State = 0;
         building = true;
         Page("build");
-        var mine = runner = new Runner(tools, new[] { "--game", game, "--out", outDir, "--game-files", FilesCopy.IsChecked == true ? "copy" : "link" }.Concat(extra));
+        var mine = runner = new Runner(tools, args);
         mine.Line += line => Dispatcher.BeginInvoke(() => OnLine(line));
         mine.Finished += why => Dispatcher.BeginInvoke(() => OnFinished(why));
         mine.Start();
     }
 
     /// A file for this build's log, the last ten kept: what a player sends when a build stops
-    void OpenLogFile()
+    void OpenLogFile(string work)
     {
         CloseLogFile();
         logPath = null;
@@ -251,6 +303,7 @@ public partial class MainWindow : Window
             logFile.WriteLine($"Wondershot Builder {typeof(MainWindow).Assembly.GetName().Version?.ToString(3)}, {DateTime.Now:s}");
             logFile.WriteLine($"game: {game}");
             logFile.WriteLine($"out: {outDir}");
+            logFile.WriteLine($"work: {work}");
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { logFile = null; logPath = null; }
     }
@@ -398,10 +451,20 @@ public partial class MainWindow : Window
     {
         if (tools == null) return;
         var asker = new Runner(tools, ["--check-update"]);
-        string? answer = null;
-        asker.Line += line => { if (line.StartsWith("@@update ")) answer = line[9..]; };
+        string? answer = null, builderTag = null;
+        asker.Line += line =>
+        {
+            if (line.StartsWith("@@update ")) answer = line[9..];
+            else if (line.StartsWith("@@builder-update ")) builderTag = line[17..];
+        };
         asker.Finished += _ => Dispatcher.BeginInvoke(() =>
         {
+            if (builderTag != null)
+            {
+                builderUpdateTag = builderTag;
+                BuilderUpdateButton.ToolTip = $"Download and open Wondershot Builder {builderTag}.";
+                BuilderUpdateButton.Visibility = Visibility.Visible;
+            }
             if (answer == null || !answer.StartsWith("available ")) return;
             var parts = answer.Split(' ', 3);
             if (parts.Length < 3) return;
@@ -418,7 +481,7 @@ public partial class MainWindow : Window
 
     void UpdatePill_Click(object sender, MouseButtonEventArgs e)
     {
-        if (building || updateTag == null || updateUrl == null) return;
+        if (building || updatingBuilder || updateTag == null || updateUrl == null) return;
         if (!gameOk || game == null)
         {
             MessageBox.Show(this, $"Wondershot {updateTag} is ready to download. Choose your game first, then click this again: the update downloads the new release and rebuilds only what changed.",
@@ -426,6 +489,43 @@ public partial class MainWindow : Window
             return;
         }
         StartBuild("--update-to", updateTag, "--update-url", updateUrl);
+    }
+
+    void BuilderUpdate_Click(object sender, RoutedEventArgs e)
+    {
+        if (tools == null || builderUpdateTag == null || building || updatingBuilder) return;
+        updatingBuilder = true;
+        SetupPage.IsEnabled = false;
+        BuilderUpdateButton.IsEnabled = false;
+        BuilderUpdateButton.Content = "Updating Builder…";
+        SaveSettings();
+        var updater = new Runner(tools, ["--update-builder", builderUpdateTag]);
+        string? exe = null;
+        updater.Line += line => { if (line.StartsWith("@@builder-ready ")) exe = line[16..]; };
+        updater.Finished += why => Dispatcher.BeginInvoke(() =>
+        {
+            if (why == null && exe != null)
+            {
+                try
+                {
+                    using var started = Process.Start(new ProcessStartInfo(exe)
+                    {
+                        WorkingDirectory = Path.GetDirectoryName(exe)!, UseShellExecute = false,
+                    });
+                    if (started == null) throw new IOException("The new Builder could not be started.");
+                    Close();
+                    return;
+                }
+                catch (Exception ex) when (ex is IOException or Win32Exception) { why = ex.Message; }
+            }
+            updatingBuilder = false;
+            SetupPage.IsEnabled = true;
+            BuilderUpdateButton.IsEnabled = true;
+            BuilderUpdateButton.Content = "Update Builder app";
+            MessageBox.Show(this, why ?? "The update did not return a Builder to open.", "Wondershot Builder",
+                            MessageBoxButton.OK, MessageBoxImage.Error);
+        });
+        updater.Start();
     }
 
     void Play_Click(object sender, RoutedEventArgs e) => Launch(false);

@@ -67,7 +67,8 @@ releases (not `/releases/latest`, which hides pre-releases) and orders `alpha < 
 3. Lint the zip: no game-like names (`.nso .nca .nup .bin .spv`, `romfs/`, `shader_overrides`, `a64emit.dll`), every source
    file in `tools/` is in `git ls-files` (but `tools/third_party/renhdrum/renhdrum.dll`, the one built file), `tools/version.txt`
    is the tag.
-4. `gh release create <tag> <zip> --target <full commit sha> --prerelease --title "Wondershot <tag>" --notes-file <notes>`.
+4. Name the asset `WondershotBuilder-<tag>.zip` so the Builder app can find it. Use
+   `gh release create <tag> <zip> --target <full commit sha> --prerelease --title "Wondershot <tag>" --notes-file <notes>`.
 5. Check `python -I nx2/make_wonder.py --check-update --tools <a folder whose version.txt is the previous tag>` offers it.
 
 A release with downloads is not deleted and recreated: cut the next alpha instead.
