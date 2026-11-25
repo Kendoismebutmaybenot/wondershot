@@ -30,7 +30,8 @@ public partial class MainWindow : Window
 {
     sealed record Settings(string? Game, string? Out, bool Copy = false, bool PortableWorkspace = true);
 
-    const string DefaultWorkspace = @"%LOCALAPPDATA%\WondershotBuilder\work";
+    const string AppDataWorkspace = @"%LOCALAPPDATA%\WondershotBuilder\work";
+    const string WorkspaceDirectory = "build-workspace";
     static readonly string SettingsPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WondershotBuilder", "settings.json");
 
@@ -152,7 +153,6 @@ public partial class MainWindow : Window
     void UseGame(string path)
     {
         game = path;
-        RefreshWorkspacePath();
         gameOk = false;
         BuildButton.IsEnabled = false;
         DropTitle.Text = Path.GetFileName(path.TrimEnd('\\', '/')) is { Length: > 0 } n ? n : path;
@@ -202,26 +202,28 @@ public partial class MainWindow : Window
     {
         var dialog = new OpenFolderDialog { Title = "Choose where Wondershot goes" };
         if (dialog.ShowDialog(this) != true) return;
-        outDir = dialog.FolderName;
-        // (a folder that is not empty and is not a Wondershot folder: its own subfolder, so nothing of the player's is mixed in)
-        if (Directory.Exists(outDir) && Directory.EnumerateFileSystemEntries(outDir).Any() && !File.Exists(Path.Combine(outDir, "wonder.exe")))
-            outDir = Path.Combine(outDir, "Wondershot");
+        outDir = InstallFolder(dialog.FolderName);
         OutText.Text = outDir;
+        RefreshWorkspacePath();
         RefreshInstalled();
     }
 
-    static string WorkspacePath(string source)
+    static string InstallFolder(string selected)
     {
-        var fullPath = Path.GetFullPath(source);
-        var sourceFolder = Directory.Exists(fullPath) ? fullPath : Path.GetDirectoryName(fullPath)!;
-        return Path.Combine(sourceFolder, "WondershotBuilder", "work");
+        if (!Directory.Exists(selected) || File.Exists(Path.Combine(selected, "wonder.exe"))) return selected;
+        // A first build may have stopped after creating its workspace. Reuse that install folder on retry.
+        var workspace = Path.Combine(selected, WorkspaceDirectory);
+        if (Directory.EnumerateFileSystemEntries(selected).Any(entry =>
+            !string.Equals(entry, workspace, StringComparison.OrdinalIgnoreCase) || !Directory.Exists(entry)))
+            return Path.Combine(selected, "Wondershot");
+        return selected;
     }
+
+    string? BuildWorkspace() => PortableWorkspace.IsChecked == true ? Path.Combine(outDir, WorkspaceDirectory) : null;
 
     void RefreshWorkspacePath()
     {
-        var path = DefaultWorkspace;
-        if (PortableWorkspace.IsChecked == true)
-            path = game == null ? "Choose your game to see the workspace path." : WorkspacePath(game);
+        var path = BuildWorkspace() ?? AppDataWorkspace;
         WorkspaceText.Text = path;
         WorkspaceText.ToolTip = path;
     }
@@ -264,14 +266,13 @@ public partial class MainWindow : Window
     {
         if (tools == null || game == null || !gameOk || updatingBuilder) return;
         var copy = FilesCopy.IsChecked == true;
-        var portable = PortableWorkspace.IsChecked == true;
-        var work = portable ? WorkspacePath(game) : null;
+        var work = BuildWorkspace();
         var args = new List<string> { "--game", game, "--out", outDir, "--game-files", copy ? "copy" : "link" };
         if (work != null) args.AddRange(["--work", work]);
         args.AddRange(extra);
         SaveSettings();
         log.Clear();
-        OpenLogFile(work ?? DefaultWorkspace);
+        OpenLogFile(work ?? AppDataWorkspace);
         buildWarning = null;
         LogBox.Clear();
         Bar.Value = 0;

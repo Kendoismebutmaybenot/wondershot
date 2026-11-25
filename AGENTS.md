@@ -37,9 +37,9 @@ what is on this page.
 
 ## Building and testing a change
 
-The Builder's own work folder (`%LOCALAPPDATA%\WondershotBuilder\work`) makes a rebuild incremental: change a source file in
-the Builder's `tools/` copy (or run from the checkout), then
-`python -I -u -X utf8 nx2/make_wonder.py --game <dump> --out <folder> --jobs 8`. A one-file change takes 1 to 2 minutes.
+The Builder's `build-workspace` inside the install folder makes a rebuild incremental. If you opted out, the workspace is
+`%LOCALAPPDATA%\WondershotBuilder\work`. Change a source file in the Builder's `tools/` copy (or run from the checkout), then
+`python -I -u -X utf8 nx2/make_wonder.py --game <dump> --out <folder> --work <workspace> --jobs 8`. A one-file change takes 1 to 2 minutes.
 Look at a log, not at the screen alone: `RX_VK_SHOTS=<dir> RX_VK_SHOT_EVERY=<frames>` writes the game's own frames as PNGs.
 The game's log lines (`vk: ...`, `nvn: ...`, `hid: ...`) say what the renderer did.
 
