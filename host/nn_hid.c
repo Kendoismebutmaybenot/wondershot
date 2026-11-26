@@ -943,14 +943,33 @@ static uint64_t bound_pad_buttons_p(int table, uint64_t raw) {
     ReleaseSRWLockShared(&pad_bind_lock);
     return buttons;
 }
-/* player pl (1 to 3: No.2 to No.4) has a pad: its buttons through its controls, and its sticks; 0 with none */
-static int player_read(int pl, uint64_t *buttons, int32_t stick[4]) {
-    uint64_t raw = 0;
+/* player pl (0 to 3, not the keyboard's) has a pad: its buttons through its controls, and its sticks; 0 with none. raw: its
+   inputs held, 1 << HOS_PAD_* (player_menu_gate) */
+static int player_read(int pl, uint64_t *raw, uint64_t *buttons, int32_t stick[4]) {
     int32_t s[4] = {0};
-    if (!hos_sdl_pads_player(pl, &raw, s)) return 0;
-    *buttons = bound_pad_buttons_p(role_table(pl), raw);
+    *raw = 0;
+    if (!hos_sdl_pads_player(pl, raw, s)) return 0;
+    *buttons = bound_pad_buttons_p(role_table(pl), *raw);
     memcpy(stick, s, sizeof s);
     return 1;
+}
+/* (Wondershot) the other players' pads as read_input's pad block takes the keyboard's player's: while the Insert menu is open
+   they are its own (the menu hears every pad: pads_read's pad_raw_menu), and after it closed each input it had waits until
+   it is let go (the press that closed it never reaches the game); the others and the sticks count again at once.
+   tests/test_player_pads_after_menu.py */
+static uint64_t player_after_menu[4];
+static int player_menu_was[4];
+static void player_menu_gate(int pl, uint64_t raw, uint64_t *buttons, int32_t stick[4]) {
+    const int menu = rx_option(1, 0);
+    if (menu || player_menu_was[pl]) player_after_menu[pl] |= raw;   /* (the first read after the close too) */
+    else player_after_menu[pl] &= raw;
+    player_menu_was[pl] = menu;
+    if (menu) {
+        *buttons = 0;
+        memset(stick, 0, 4 * sizeof *stick);
+    } else if (player_after_menu[pl]) {
+        *buttons = bound_pad_buttons_p(role_table(pl), raw & ~player_after_menu[pl]);
+    }
 }
 static int player_connected(int pl) {
     uint64_t b = 0;
@@ -1573,14 +1592,15 @@ static void npad_states(Ctx *c) {
     }
     uint32_t id = G32(ARG(2));
     if (id <= 3 && id != (uint32_t)kb_player) {   /* (Wondershot) the players but the keyboard's: their own pads, none of its keyboard, sprint or toggles */
-        uint64_t pb = 0;
+        uint64_t raw = 0, pb = 0;
         int32_t ps[4] = {0};
         static int64_t counter[4];
-        const int on = player_read((int)id, &pb, ps);
+        const int on = player_read((int)id, &raw, &pb, ps);
         static const char *env;
         static int looked;
         if (!looked) looked = 1, env = getenv("HOS_INPUT_BACKGROUND");
-        if (on && !game_in_front() && !pads_in_background(env, rx_option(4, 0))) pb = 0, memset(ps, 0, sizeof ps);
+        if (on && !game_in_front() && !pads_in_background(env, rx_option(4, 0))) raw = pb = 0, memset(ps, 0, sizeof ps);
+        player_menu_gate((int)id, raw, &pb, ps);   /* (the Insert menu's while it is open, as the keyboard's player's pad is) */
         const int64_t t = ++counter[id];
         for (int i = 0; i < count; i++) {
             uint64_t e = out + (uint64_t)i * STATE_SIZE;
