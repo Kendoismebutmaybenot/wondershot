@@ -2469,6 +2469,77 @@ HLE(_ZN2nn5audio28GetLightLimiterLookAheadTimeEPKNS0_16LightLimiterTypeE) {
     RET(t);
 }
 
+/* ---- Delay: AddDelay(config, DelayType*, buffer, size, SubMixType* / FinalMixType*, max delay TimeSpan, channels) ----
+   Swamp Pipe Crawl's Wonder adds one (delay_wonder_dokanmorimori). When the course ends the game disables it and a job
+   sleeps until IsDelayRemovable says yes, then Remove hands back the work buffer for the game to free. Every Delay call
+   was a stub answering 0, so the job never ended, the main thread waited on it and the course-clear screen stayed grey
+   (issue #7). Tracked per object address, as the biquad filter and the limiter above: the buffer, the delay time and
+   the enabled flag. The echo itself is not mixed. */
+static FxTrack delay_track[FX_TRACK];
+static void add_delay(Ctx *c) {
+    au_lock();
+    FxTrack *f = fx_find(delay_track, ARG(1), 1);
+    if (f) f->buffer = ARG(2), f->lookahead = ARG(5), f->enabled = 1;
+    au_unlock();
+    AUT("audio: delay added at %#llx, buffer %#llx", (unsigned long long)ARG(1), (unsigned long long)ARG(2));
+    RET(f ? 0 : 0x1A9 << 9 | 153);   /* (out of effects: an audio result) */
+}
+HLE(_ZN2nn5audio8AddDelayEPNS0_19AudioRendererConfigEPNS0_9DelayTypeEPvmPNS0_10SubMixTypeENS_8TimeSpanEi) { add_delay(c); }
+HLE(_ZN2nn5audio8AddDelayEPNS0_19AudioRendererConfigEPNS0_9DelayTypeEPvmPNS0_12FinalMixTypeENS_8TimeSpanEi) { add_delay(c); }
+/* RemoveDelay(config, DelayType*, SubMixType* / FinalMixType*) -> the work buffer */
+static void remove_delay(Ctx *c) {
+    au_lock();
+    FxTrack *f = fx_find(delay_track, ARG(1), 0);
+    const uint64_t buffer = f ? f->buffer : 0;
+    if (f) f->obj = 0;
+    au_unlock();
+    AUT("audio: delay removed at %#llx, buffer %#llx", (unsigned long long)ARG(1), (unsigned long long)buffer);
+    RET(buffer);
+}
+HLE(_ZN2nn5audio11RemoveDelayEPNS0_19AudioRendererConfigEPNS0_9DelayTypeEPNS0_10SubMixTypeE) { remove_delay(c); }
+HLE(_ZN2nn5audio11RemoveDelayEPNS0_19AudioRendererConfigEPNS0_9DelayTypeEPNS0_12FinalMixTypeE) { remove_delay(c); }
+HLE(_ZN2nn5audio15SetDelayEnabledEPNS0_9DelayTypeEb) {
+    au_lock();
+    FxTrack *f = fx_find(delay_track, ARG(0), 0);
+    if (f) f->enabled = (int)(ARG(1) & 1);
+    au_unlock();
+}
+HLE(_ZN2nn5audio14IsDelayEnabledEPKNS0_9DelayTypeE) {
+    au_lock();
+    const FxTrack *f = fx_find(delay_track, ARG(0), 0);
+    const int on = f ? f->enabled : 0;
+    au_unlock();
+    RET(on);
+}
+/* (removable once disabled, as Aux; an object not tracked, never added or removed already, is removable) */
+HLE(_ZN2nn5audio16IsDelayRemovableEPKNS0_9DelayTypeE) {
+    au_lock();
+    const FxTrack *f = fx_find(delay_track, ARG(0), 0);
+    const int removable = !f || !f->enabled;
+    au_unlock();
+    RET(removable);
+}
+HLE(_ZN2nn5audio12SetDelayTimeEPNS0_9DelayTypeENS_8TimeSpanE) {
+    au_lock();
+    FxTrack *f = fx_find(delay_track, ARG(0), 0);
+    if (f) f->lookahead = ARG(1);
+    au_unlock();
+}
+HLE(_ZN2nn5audio12GetDelayTimeEPKNS0_9DelayTypeE) {
+    au_lock();
+    const FxTrack *f = fx_find(delay_track, ARG(0), 0);
+    const uint64_t t = f ? f->lookahead : 0;
+    au_unlock();
+    RET(t);
+}
+/* (the echo is not mixed: its gains and routing are accepted) */
+HLE(_ZN2nn5audio19SetDelayInputOutputEPNS0_9DelayTypeEPKaS4_i) {}
+HLE(_ZN2nn5audio20SetDelayFeedbackGainEPNS0_9DelayTypeEf) {}
+HLE(_ZN2nn5audio15SetDelayDryGainEPNS0_9DelayTypeEf) {}
+HLE(_ZN2nn5audio14SetDelayInGainEPNS0_9DelayTypeEf) {}
+HLE(_ZN2nn5audio21SetDelayChannelSpreadEPNS0_9DelayTypeEf) {}
+HLE(_ZN2nn5audio21SetDelayLowPassAmountEPNS0_9DelayTypeEf) {}
+
 /* ---- I3DL2 reverb: AddI3dl2Reverb(config, I3dl2ReverbType*, buffer, size, SubMixType* / FinalMixType*, channels) - */
 static Reverb *reverb_of(uint64_t obj) {
     const int i = get_handle(obj, K_EFFECT);
