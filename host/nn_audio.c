@@ -491,21 +491,80 @@ static void aux_frame(Aux *a, Mix *m) {
             for (int i = 0; i < FRAME; i++) m->buf[b][i] = pcm[ch * FRAME + i] * (1.0f / 32768.0f);
     }
 }
+/* ---- Delay DSP (on a mix: its input buffers to its output buffers) -----------------------------------------------
+   Parameters as the game sets them (nn::audio::SetDelay*), with the SDK's AddDelay defaults (read from its code: input
+   gain 0, feedback 0, output gain 1, dry gain 1, spread 0, low-pass 0; the output gain has no setter the game calls).
+   Per channel, each sample: echo = the line one delay time ago; the feedback is the feedback gain x ((1 - spread) x this
+   channel's echo + spread x its pair's echo); the line takes in gain x input + that feedback, through a one-pole low pass
+   (its pole 0.95 x the low-pass amount); out = dry gain x input + output gain x echo. As the console's delay is known to
+   process it. The lines are ours, in host memory, sized from the maximum delay time AddDelay gives; the game's work
+   buffer is left alone. HOS_AUDIO_NO_DELAY=1: left out (dry). */
+#define DELAY_MAX_SECONDS 10
+typedef struct {
+    int used, mix, enabled, n, channels, len, pos;
+    uint64_t obj, order, buffer;     /* (obj: the game's DelayType; buffer: its work buffer, handed back by RemoveDelay) */
+    int64_t time_ns, max_ns;
+    float in_gain, feedback, out_gain, dry, spread, lowpass;
+    int8_t in[MAX_CH], out[MAX_CH];
+    float *line;                     /* channels x len samples */
+    float lp[MAX_CH];                /* low-pass states */
+    float peak;                      /* (the loudest input since the trace last looked) */
+} Delay;
+static Delay delays[MAX_EFFECTS];
+static void delay_frame(Delay *d, Mix *m) {
+    static int off = -1;
+    if (off < 0) off = env_on("HOS_AUDIO_NO_DELAY");
+    if (off || !d->enabled || d->n <= 0 || !d->line || d->len < 2) return;
+    const int n = d->n < d->channels ? d->n : d->channels;
+    const double want = (double)d->time_ns * RATE / 1e9;
+    const int lag = want < 1 ? 1 : want > d->len - 1 ? d->len - 1 : (int)want;
+    const float spread = fminf(fmaxf(d->spread, 0.0f), 1.0f);
+    const float base = d->feedback * (1.0f - spread), cross = d->feedback * spread;
+    const float pole = 0.95f * fminf(fmaxf(d->lowpass, 0.0f), 1.0f);
+    float input[MAX_CH][FRAME];   /* (all inputs first: an output may be another channel's input) */
+    for (int c = 0; c < n; c++) {
+        const int b = d->in[c];
+        if (b >= 0 && b < m->buffers) memcpy(input[c], m->buf[b], sizeof input[c]);
+        else memset(input[c], 0, sizeof input[c]);
+    }
+    for (int i = 0; i < FRAME; i++) {
+        const int read = (d->pos - lag + d->len) % d->len;
+        float echo[MAX_CH];
+        for (int c = 0; c < n; c++) echo[c] = d->line[c * d->len + read];
+        for (int c = 0; c < n; c++) {
+            const int pair = c ^ 1;   /* (left with right, centre with LFE, rear left with rear right) */
+            const float other = pair < n ? echo[pair] : echo[c];
+            const float x = input[c][i];
+            if (fabsf(x) > d->peak) d->peak = fabsf(x);
+            const float w = d->in_gain * x + base * echo[c] + cross * other;
+            d->lp[c] = (1.0f - pole) * w + pole * d->lp[c];
+            if (!isfinite(d->lp[c])) d->lp[c] = 0;   /* (a NaN would stay in the line for good) */
+            d->line[c * d->len + d->pos] = d->lp[c];
+            const int bo = d->out[c];
+            if (bo >= 0 && bo < m->buffers) m->buf[bo][i] = d->dry * x + d->out_gain * echo[c];
+        }
+        d->pos = (d->pos + 1) % d->len;
+    }
+}
+
 static void effects_frame(int mix) {
     /* Preserve insertion order across effect types, e.g. reverb followed by a CPU delay. */
     uint64_t previous = 0;
     for (;;) {
         uint64_t next = UINT64_MAX;
-        int reverb = -1, aux = -1;
+        int reverb = -1, aux = -1, delay = -1;
         for (int e = 0; e < MAX_EFFECTS; e++) {
             if (reverbs[e].used && reverbs[e].mix == mix && reverbs[e].order > previous && reverbs[e].order < next)
-                next = reverbs[e].order, reverb = e, aux = -1;
+                next = reverbs[e].order, reverb = e, aux = delay = -1;
             if (auxes[e].used && auxes[e].mix == mix && auxes[e].order > previous && auxes[e].order < next)
-                next = auxes[e].order, aux = e, reverb = -1;
+                next = auxes[e].order, aux = e, reverb = delay = -1;
+            if (delays[e].used && delays[e].mix == mix && delays[e].order > previous && delays[e].order < next)
+                next = delays[e].order, delay = e, reverb = aux = -1;
         }
-        if (reverb < 0 && aux < 0) break;
+        if (reverb < 0 && aux < 0 && delay < 0) break;
         if (reverb >= 0) reverb_frame(&reverbs[reverb], &mixes[mix]);
-        else aux_frame(&auxes[aux], &mixes[mix]);
+        else if (aux >= 0) aux_frame(&auxes[aux], &mixes[mix]);
+        else delay_frame(&delays[delay], &mixes[mix]);
         previous = next;
     }
 }
@@ -2473,72 +2532,130 @@ HLE(_ZN2nn5audio28GetLightLimiterLookAheadTimeEPKNS0_16LightLimiterTypeE) {
    Swamp Pipe Crawl's Wonder adds one (delay_wonder_dokanmorimori). When the course ends the game disables it and a job
    sleeps until IsDelayRemovable says yes, then Remove hands back the work buffer for the game to free. Every Delay call
    was a stub answering 0, so the job never ended, the main thread waited on it and the course-clear screen stayed grey
-   (issue #7). Tracked per object address, as the biquad filter and the limiter above: the buffer, the delay time and
-   the enabled flag. The echo itself is not mixed. */
-static FxTrack delay_track[FX_TRACK];
+   (issue #7). Each delay is kept by its object address (the game's DelayType is not written) and mixed by delay_frame. */
+static Delay *delay_of(uint64_t obj) {   /* (with the lock held) */
+    if (!obj) return NULL;
+    for (int e = 0; e < MAX_EFFECTS; e++)
+        if (delays[e].used && delays[e].obj == obj) return &delays[e];
+    return NULL;
+}
 static void add_delay(Ctx *c) {
     au_lock();
-    FxTrack *f = fx_find(delay_track, ARG(1), 1);
-    if (f) f->buffer = ARG(2), f->lookahead = ARG(5), f->enabled = 1;
+    Delay *d = delay_of(ARG(1));
+    if (!d)
+        for (int e = 0; e < MAX_EFFECTS && !d; e++)
+            if (!delays[e].used) d = &delays[e];
+    const int m = mix_index(ARG(4));
+    if (!d || m < 0) {
+        au_unlock();
+        AUT("audio: delay refused (mix %d)", m);
+        RET(0x1A9 << 9 | 153);   /* (out of effects: an audio result) */
+        return;
+    }
+    free(d->line);
+    memset(d, 0, sizeof *d);
+    const int64_t max_ns = (int64_t)ARG(5);
+    const double seconds = max_ns > 0 ? (double)max_ns / 1e9 : 0.0;
+    const int channels = (int)ARG(6) < 1 ? 1 : (int)ARG(6) > MAX_CH ? MAX_CH : (int)ARG(6);
+    d->used = d->enabled = 1;
+    d->obj = ARG(1), d->buffer = ARG(2), d->mix = m, d->order = ++effect_order;
+    d->max_ns = d->time_ns = max_ns > 0 ? max_ns : 0;
+    d->channels = channels;
+    d->len = (int)((seconds < DELAY_MAX_SECONDS ? seconds : DELAY_MAX_SECONDS) * RATE) + 2;
+    d->line = (float *)calloc((size_t)channels * (size_t)d->len, sizeof(float));
+    d->out_gain = 1.0f, d->dry = 1.0f;   /* (the SDK's AddDelay defaults: input gain and feedback 0, so no echo until the game sets them) */
+    for (int k = 0; k < MAX_CH; k++) d->in[k] = d->out[k] = (int8_t)k;
+    d->n = channels;
     au_unlock();
-    AUT("audio: delay added at %#llx, buffer %#llx", (unsigned long long)ARG(1), (unsigned long long)ARG(2));
-    RET(f ? 0 : 0x1A9 << 9 | 153);   /* (out of effects: an audio result) */
+    AUT("audio: delay added at %#llx on mix %d, %d channels, at most %.3f s", (unsigned long long)ARG(1), m, channels, seconds);
+    RET(0);
 }
 HLE(_ZN2nn5audio8AddDelayEPNS0_19AudioRendererConfigEPNS0_9DelayTypeEPvmPNS0_10SubMixTypeENS_8TimeSpanEi) { add_delay(c); }
 HLE(_ZN2nn5audio8AddDelayEPNS0_19AudioRendererConfigEPNS0_9DelayTypeEPvmPNS0_12FinalMixTypeENS_8TimeSpanEi) { add_delay(c); }
 /* RemoveDelay(config, DelayType*, SubMixType* / FinalMixType*) -> the work buffer */
 static void remove_delay(Ctx *c) {
     au_lock();
-    FxTrack *f = fx_find(delay_track, ARG(1), 0);
-    const uint64_t buffer = f ? f->buffer : 0;
-    if (f) f->obj = 0;
+    Delay *d = delay_of(ARG(1));
+    const uint64_t buffer = d ? d->buffer : 0;
+    if (d) {
+        AUT("audio: delay removed at %#llx, loudest input %.3f", (unsigned long long)ARG(1), d->peak);
+        free(d->line);
+        memset(d, 0, sizeof *d);
+    }
     au_unlock();
-    AUT("audio: delay removed at %#llx, buffer %#llx", (unsigned long long)ARG(1), (unsigned long long)buffer);
     RET(buffer);
 }
 HLE(_ZN2nn5audio11RemoveDelayEPNS0_19AudioRendererConfigEPNS0_9DelayTypeEPNS0_10SubMixTypeE) { remove_delay(c); }
 HLE(_ZN2nn5audio11RemoveDelayEPNS0_19AudioRendererConfigEPNS0_9DelayTypeEPNS0_12FinalMixTypeE) { remove_delay(c); }
 HLE(_ZN2nn5audio15SetDelayEnabledEPNS0_9DelayTypeEb) {
     au_lock();
-    FxTrack *f = fx_find(delay_track, ARG(0), 0);
-    if (f) f->enabled = (int)(ARG(1) & 1);
+    Delay *d = delay_of(ARG(0));
+    if (d) {
+        d->enabled = (int)(ARG(1) & 1);
+        AUT("audio: delay %s (loudest input %.3f)", d->enabled ? "on" : "off", d->peak);
+        d->peak = 0;
+    }
     au_unlock();
 }
 HLE(_ZN2nn5audio14IsDelayEnabledEPKNS0_9DelayTypeE) {
     au_lock();
-    const FxTrack *f = fx_find(delay_track, ARG(0), 0);
-    const int on = f ? f->enabled : 0;
+    const Delay *d = delay_of(ARG(0));
+    const int on = d ? d->enabled : 0;
     au_unlock();
     RET(on);
 }
 /* (removable once disabled, as Aux; an object not tracked, never added or removed already, is removable) */
 HLE(_ZN2nn5audio16IsDelayRemovableEPKNS0_9DelayTypeE) {
     au_lock();
-    const FxTrack *f = fx_find(delay_track, ARG(0), 0);
-    const int removable = !f || !f->enabled;
+    const Delay *d = delay_of(ARG(0));
+    const int removable = !d || !d->enabled;
     au_unlock();
     RET(removable);
 }
 HLE(_ZN2nn5audio12SetDelayTimeEPNS0_9DelayTypeENS_8TimeSpanE) {
     au_lock();
-    FxTrack *f = fx_find(delay_track, ARG(0), 0);
-    if (f) f->lookahead = ARG(1);
+    Delay *d = delay_of(ARG(0));
+    if (d) {
+        const int64_t t = (int64_t)ARG(1);
+        d->time_ns = t < 0 ? 0 : t > d->max_ns ? d->max_ns : t;
+        AUT("audio: delay time %.3f s", (double)d->time_ns / 1e9);
+    }
     au_unlock();
 }
 HLE(_ZN2nn5audio12GetDelayTimeEPKNS0_9DelayTypeE) {
     au_lock();
-    const FxTrack *f = fx_find(delay_track, ARG(0), 0);
-    const uint64_t t = f ? f->lookahead : 0;
+    const Delay *d = delay_of(ARG(0));
+    const uint64_t t = d ? (uint64_t)d->time_ns : 0;
     au_unlock();
     RET(t);
 }
-/* (the echo is not mixed: its gains and routing are accepted) */
-HLE(_ZN2nn5audio19SetDelayInputOutputEPNS0_9DelayTypeEPKaS4_i) {}
-HLE(_ZN2nn5audio20SetDelayFeedbackGainEPNS0_9DelayTypeEf) {}
-HLE(_ZN2nn5audio15SetDelayDryGainEPNS0_9DelayTypeEf) {}
-HLE(_ZN2nn5audio14SetDelayInGainEPNS0_9DelayTypeEf) {}
-HLE(_ZN2nn5audio21SetDelayChannelSpreadEPNS0_9DelayTypeEf) {}
-HLE(_ZN2nn5audio21SetDelayLowPassAmountEPNS0_9DelayTypeEf) {}
+HLE(_ZN2nn5audio19SetDelayInputOutputEPNS0_9DelayTypeEPKaS4_i) {
+    au_lock();
+    Delay *d = delay_of(ARG(0));
+    if (d && ARG(1) && ARG(2)) {
+        const int n = (int)ARG(3) < 0 ? 0 : (int)ARG(3) > d->channels ? d->channels : (int)ARG(3);
+        for (int k = 0; k < n; k++) {
+            d->in[k] = *(int8_t *)GP(ARG(1) + k);
+            d->out[k] = *(int8_t *)GP(ARG(2) + k);
+        }
+        d->n = n;
+        AUT("audio: delay %d channels: in %d %d out %d %d", n, d->in[0], d->in[1], d->out[0], d->out[1]);
+    }
+    au_unlock();
+}
+/* (each as its own HLE line: nx2/standalone.py finds the host's HLEs by `HLE(name)` at a line's start) */
+static void delay_float(Ctx *c, size_t field, const char *what) {
+    au_lock();
+    Delay *d = delay_of(ARG(0));
+    if (d) *(float *)((char *)d + field) = farg(c, 0);
+    au_unlock();
+    AUT("audio: delay %s %.3f", what, farg(c, 0));
+}
+HLE(_ZN2nn5audio20SetDelayFeedbackGainEPNS0_9DelayTypeEf) { delay_float(c, offsetof(Delay, feedback), "feedback"); }
+HLE(_ZN2nn5audio15SetDelayDryGainEPNS0_9DelayTypeEf) { delay_float(c, offsetof(Delay, dry), "dry gain"); }
+HLE(_ZN2nn5audio14SetDelayInGainEPNS0_9DelayTypeEf) { delay_float(c, offsetof(Delay, in_gain), "input gain"); }
+HLE(_ZN2nn5audio21SetDelayChannelSpreadEPNS0_9DelayTypeEf) { delay_float(c, offsetof(Delay, spread), "channel spread"); }
+HLE(_ZN2nn5audio21SetDelayLowPassAmountEPNS0_9DelayTypeEf) { delay_float(c, offsetof(Delay, lowpass), "low-pass amount"); }
 
 /* ---- I3DL2 reverb: AddI3dl2Reverb(config, I3dl2ReverbType*, buffer, size, SubMixType* / FinalMixType*, channels) - */
 static Reverb *reverb_of(uint64_t obj) {
