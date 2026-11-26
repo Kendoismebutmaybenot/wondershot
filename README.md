@@ -15,7 +15,7 @@ If you use linked game files with a `.nup`, keep the workspace's `dump` folder i
 When **Update Builder app** appears, it downloads the new Builder, installs it in a sibling `WondershotBuilder-updates` folder and
 opens it. The previous Builder stays available. **Update Wondershot** rebuilds the playable game.
 
-Wondershot is a static recompilation of **Super Mario Bros. Wonder – Nintendo Switch 2 Edition** for PC, built on
+Wondershot is a static recompilation of **Super Mario Bros. Wonder – Switch 2 Edition** for PC, built on
 [Longshot](https://git.magicbean.dev/MagicBeanDev/Longshot) by MagicBeanDev. It statically recompiles the game's own code
 for the PC, so you need your own legally dumped copy of the game. **No game files are included here, and none ever will be.**
 
