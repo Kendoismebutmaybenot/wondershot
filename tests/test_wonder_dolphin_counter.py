@@ -76,12 +76,23 @@ int main(void){
 
 
 class DolphinCounterTests(unittest.TestCase):
-    def test_cached_unmarked_stores_are_preserved(self):
+    def test_cached_counter_stores_become_tracked(self):
         before = '#include "a64.h"\n' + BODY.replace('recomp_store32(', 'recomp_store32_sp(')
         out = P.patch_wonder_player_counter(before)
         self.assertIn('hos_frame_whole(c->x[19] + 2204,', out)
-        self.assertEqual(out.count('recomp_store32_sp('), before.count('recomp_store32_sp('))
+        self.assertNotIn('recomp_store32_sp(', out)
+        self.assertEqual(out.count('recomp_store32('), before.count('recomp_store32_sp('))
         self.assertEqual(P.patch_wonder_player_counter(out), out)
+        # An already patched cache must also regain write tracking.
+        old_patched = out.replace('recomp_store32(', 'recomp_store32_sp(')
+        self.assertEqual(P.patch_wonder_player_counter(old_patched), out)
+
+    def test_stack_and_other_object_stores_are_unchanged(self):
+        stores = ('    recomp_store32_sp(c,c->x[31] + 8,c->x[8]);\n'
+                  '    recomp_store32_sp(c,c->x[20] + 2204,c->x[9]);\n'
+                  '    recomp_store32_sp(c,c->x[19] + 2212,c->x[9]);\n')
+        before = '#include "a64.h"\n' + BODY.replace('    c->x[19]=c->x[0];\n', stores)
+        self.assertIn(stores, P.patch_wonder_player_counter(before))
 
     def test_fractional_player_ticks(self):
         cc = os.environ.get('WONDER_TEST_CC') or shutil.which('clang') or shutil.which('gcc')

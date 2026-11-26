@@ -635,20 +635,17 @@ def patch_wonder_player_counter(s):
     if end < 0:
         end = len(s)
     body = s[start:end]
-    # Fresh lifts use tracked stores; older cached lifts can use the unmarked
-    # helper. Match either form without changing the lifter's chosen stores.
-    for helper in ("recomp_store32", "recomp_store32_sp"):
-        old = WONDER_PLAYER_COUNTER_OLD.replace("recomp_store32", helper)
-        new = WONDER_PLAYER_COUNTER_NEW.replace("recomp_store32", helper)
-        if new in body:
-            return s
-        if (body.count(old) == 1 and
-                body.count(helper + "(c,c->x[19] + 2204,c->x[9]);") == 1 and
-                body.count(helper + "(c,c->x[19] + 2208,c->x[8]);") == 1):
-            body = body.replace(old, new, 1)
-            break
-    else:
+    # These PlayerComponent fields are not stack memory: keep their writes
+    # tracked, including when reusing an older lift with unmarked stores.
+    body = re.sub(r"recomp_store32_sp\(c,c->x\[19\] \+ (2184|2196|2204|2208),",
+                  r"recomp_store32(c,c->x[19] + \1,", body)
+    if WONDER_PLAYER_COUNTER_NEW in body:
+        return s[:start] + body + s[end:]
+    if (body.count(WONDER_PLAYER_COUNTER_OLD) != 1 or
+            body.count("recomp_store32(c,c->x[19] + 2204,c->x[9]);") != 1 or
+            body.count("recomp_store32(c,c->x[19] + 2208,c->x[8]);") != 1):
         raise RuntimeError("Wonder player counters no longer match expected step/addition sites")
+    body = body.replace(WONDER_PLAYER_COUNTER_OLD, WONDER_PLAYER_COUNTER_NEW, 1)
     out = s[:start] + body + s[end:]
     if WHOLE_DECL not in out:
         out = out.replace('#include "a64.h"\n', '#include "a64.h"\n' + WHOLE_DECL, 1)
