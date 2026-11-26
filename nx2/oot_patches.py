@@ -613,6 +613,98 @@ def patch_wonder_camera_scroll(s):
     return result.replace('#include "a64.h"\n','#include "a64.h"\n'+WONDER_SCROLL_DECL,1)
 
 
+# QueryKeepBoolTrueByTimer must keep the update which crosses its deadline.
+# Linked Blewbirds feed this pulse into a held-condition delay of the same length.
+# Testing only the new time drops the pulse before that delay can finish unless the
+# accumulated float happens to equal the deadline exactly. The native timer keeps
+# both previous and current times; allow the crossing update, then expire normally.
+WONDER_PULSE_HEAD = "void f_817fcdb0(Ctx *__restrict A64_NOESC c) {\n"
+WONDER_PULSE_BRANCH = "if (!(c->c && !c->z)) { goto L_817fce2c; }"
+WONDER_PULSE_CROSSING = r"""    {
+    float previous, deadline;
+    uint32_t previous_bits = recomp_load32(c, c->x[19] + 0x24);
+    uint32_t deadline_bits = (uint32_t)c->vreg[1][0];
+    memcpy(&previous, &previous_bits, sizeof previous);
+    memcpy(&deadline, &deadline_bits, sizeof deadline);
+    if (!(c->c && !c->z) || previous < deadline) { goto L_817fce2c; }
+    }"""
+
+
+def patch_wonder_timer_pulse(s):
+    start = s.find(WONDER_PULSE_HEAD)
+    if start < 0:
+        return s
+    end = s.find("\nvoid f_", start + len(WONDER_PULSE_HEAD))
+    if end < 0:
+        end = len(s)
+    body = s[start:end]
+    if WONDER_PULSE_CROSSING in body:
+        return s
+    if (body.count(WONDER_PULSE_BRANCH) != 1 or
+            body.count("f_801ff3d0(c);") != 1):
+        raise RuntimeError("Wonder pulse timer no longer matches expected clock/deadline")
+    body = body.replace(WONDER_PULSE_BRANCH, WONDER_PULSE_CROSSING, 1)
+    return s[:start] + body + s[end:]
+
+
+# IsKeepTrueWhileFrame is used by the Blewbird shooting graph. Its private counter
+# is zeroed on entry and whenever its condition is false. Keep fractional ticks in
+# that same slot so restarts, object reuse and concurrent actors need no host cache.
+# The original query still performs the signed threshold comparison, publishes its
+# output through the native setter, and updates the query-cache flags.
+WONDER_HELD_HEAD = "void f_817a75b0(Ctx *__restrict A64_NOESC c) {\n"
+WONDER_HELD_WRAPPER = r"""
+void f_817a75b0(Ctx *__restrict A64_NOESC c) {
+    const uint64_t node = c->x[0];
+    if (!recomp_load8(c, recomp_load64(c, node + 0x28))) {
+        wonder_held_original(c);
+        return;
+    }
+    const uint64_t link = c->x[30];
+    f_801ff4a0(c); /* native frame step, including game time scaling */
+    uint32_t step_bits = (uint32_t)c->vreg[0][0];
+    uint32_t count_bits = recomp_load32(c, node + 0x20);
+    float step, count;
+    memcpy(&step, &step_bits, sizeof step);
+    memcpy(&count, &count_bits, sizeof count);
+    if (!(step >= 0.0f && step <= 2147483520.0f)) step = 0.0f;
+    if (!(count >= 0.0f && count <= 2147483520.0f)) count = 0.0f;
+    double elapsed = (double)count + step;
+    if (elapsed > 2147483520.0) elapsed = 2147483520.0;
+    /* Snap float roundoff at tick boundaries, without discarding fractional time. */
+    int32_t ticks = (int32_t)elapsed;
+    double roundoff = 0.0001 + elapsed * 0.000001;
+    if (roundoff > 0.001) roundoff = 0.001;
+    if ((double)(ticks + 1) - elapsed < roundoff) elapsed = ++ticks;
+    else if (elapsed - ticks < roundoff) elapsed = ticks;
+    count = (float)elapsed;
+    memcpy(&count_bits, &count, sizeof count_bits);
+    recomp_store32(c, node + 0x20, (uint32_t)(ticks - 1));
+    c->x[0] = node;
+    c->x[30] = link;
+    wonder_held_original(c);
+    recomp_store32(c, node + 0x20, count_bits);
+}
+"""
+
+
+def patch_wonder_held_frames(s):
+    start = s.find(WONDER_HELD_HEAD)
+    if start < 0 or "static void wonder_held_original(" in s:
+        return s
+    end = s.find("\nvoid f_", start + len(WONDER_HELD_HEAD))
+    if end < 0:
+        end = len(s)
+    body = s[start:end]
+    if (body.count("f_808995a0(c);") != 1 or
+            body.count("recomp_store32(c,c->x[0] + 32,c->x[8]);") != 1):
+        raise RuntimeError("Wonder held-condition query no longer matches expected counter/output")
+    original = body.replace(WONDER_HELD_HEAD,
+                            "static void wonder_held_original(Ctx *__restrict A64_NOESC c) {\n", 1)
+    declaration = "extern void f_801ff4a0(Ctx *);\n"
+    return s[:start] + declaration + original + WONDER_HELD_WRAPPER + s[end:]
+
+
 # Port the Switch 1 workaround around the complete Switch 2 PlayerSetGravityScale update.
 # Save its argument on the host stack: translated calls change guest registers during the update.
 WONDER_FLOAT_HEAD = "void f_815b7330(Ctx *__restrict A64_NOESC c) {\n"
@@ -1788,6 +1880,14 @@ def patch_file(s, name, protect_hearts=False):
     if camera != out:
         lines.append("oot_patches: Wonder vertical camera follow in " + name)
         out = camera
+    pulse = patch_wonder_timer_pulse(out)
+    if pulse != out:
+        lines.append("oot_patches: Wonder timer pulses retain the deadline crossing in " + name)
+        out = pulse
+    held = patch_wonder_held_frames(out)
+    if held != out:
+        lines.append("oot_patches: Wonder held-condition waits use fractional ticks in " + name)
+        out = held
     wonder_float = patch_wonder_float(out)
     if wonder_float != out:
         lines.append("oot_patches: Wonder high-FPS float in " + name)
