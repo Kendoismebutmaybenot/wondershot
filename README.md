@@ -24,8 +24,8 @@ for the PC, so you need your own legally dumped copy of the game. **No game file
 - Runs the Switch 2 Edition, including the **Meetup in Bellabel Park** add-on content (from your own dump)
 - **Frame rate cap** above 60 (120 tested) with the game running at the right speed (real-time step)
 - **RenoDX-style HDR**: real highlights above paper white, Highlights / Highlight start, scene grading (Exposure, Contrast,
-  Shadows, Saturation, Highlight saturation) and SDR gamma, all live in the Insert menu. Menus stay SDR. Ported from the
-  author's HDR for the Switch 1 recomp SuperWonders
+  Shadows, Saturation, Highlight saturation) and SDR gamma, all live in the Insert menu. Menus stay SDR. Ported from my
+ HDR for the Switch 1 recomp SuperWonders
 - Music and sound effects everywhere, hub worlds included, and movie audio
 - Players 2-4, per-player controls, controller and keyboard assignment, per-player motion controls
 - Button prompts that follow the controller in use (a stand-in for the system button font)
