@@ -1,9 +1,9 @@
 """After the Insert menu the pads wait input by input, not all at once (host/nn_hid.c, read_input).
 
 The press that closes the menu, and every pad input still down from it, must not reach the game until let go. Each
-waits on its own: one that stays down (a worn trigger, a Guide button, something resting on a second pad) used to keep
-every button and both sticks of every pad from the game. Production's pads_read, bound_pad_buttons and read_input's
-pad block are compiled with fakes for SDL, XInput and the clock; no device is read.
+waits on its own: a worn trigger or a held Guide button must leave the other buttons and sticks usable. This exercises
+the controller assigned to the keyboard's player. Production's pads_read, bound_pad_buttons and read_input's pad block
+are compiled with fakes for SDL, XInput and the clock; no device is read.
 
 python -I -B tests/test_pads_after_menu.py [--cc gcc]
 """
@@ -63,9 +63,24 @@ static int64_t now_ns = 1000000000LL;
 static int64_t hos_now_ns(void) { return now_ns; }
 static int menu_open;
 int rx_option(int id, int otherwise) { return id == 1 ? menu_open : id == 11 || id == 16 || id == 17 ? 0 : otherwise; }
-static uint64_t pads_down;      /* (by position, 1 << HOS_PAD_*: every pad SDL has, merged as pad_sdl.c merges them) */
+static volatile LONG kb_player = 1;
+static uint64_t pads_down;      /* (by position, 1 << HOS_PAD_*: the keyboard player's pad) */
+static uint64_t other_pad_down;
 static int32_t pads_stick[4];
-int hos_sdl_pads(uint64_t *buttons, int32_t stick[4], int *deck_builtin_input) { (void)deck_builtin_input; *buttons |= pads_down; memcpy(stick, pads_stick, sizeof pads_stick); return 2; }
+int hos_sdl_pads(uint64_t *buttons, int32_t stick[4], int *deck_builtin_input) {
+    (void)deck_builtin_input;
+    *buttons |= pads_down | other_pad_down;
+    memcpy(stick, pads_stick, sizeof pads_stick);
+    return 2;
+}
+int hos_sdl_pads_player(int player, uint64_t *buttons, int32_t stick[4]) {
+    switch (player) {
+    case 0: *buttons |= other_pad_down; return 1;
+    case 1: *buttons |= pads_down; memcpy(stick, pads_stick, sizeof pads_stick); return 1;
+    default: return 0;
+    }
+}
+uint32_t hos_players(void) { return 3; }   /* players 1 and 2 have pads */
 static void player_used(void) {}
 static void binds_load(void) {}
 static SRWLOCK pad_bind_lock = SRWLOCK_INIT;
@@ -73,7 +88,6 @@ static int pad_bind[HOS_KEY_N][2] = {[HOS_KEY_TOGGLE_HUD] = {-1, -1}};
 static int sampled_pad(int i, int k) { return pad_bind[i][k]; }
 static LONG hud_bind_generation;
 static uint64_t oc_consumed_pads;
-static volatile LONG pad_count_now;
 static int sprint_now;   /* (Sprint's gamepad input, read with the pads: tests/test_sprint.py) */
 enum { SPRINT_PAD = 2 };
 static int sprint_read(void) { return sprint_now; }
@@ -133,11 +147,12 @@ int main(void) {
     pads_down = PAD(EAST); CHECK(game(s) == SW(A));
     pads_down = 0; CHECK(game(s) == 0);
 
-    /* Something resting on a second pad: its button waits, the first pad's count */
-    menu_open = 1; pads_down = PAD(NORTH); CHECK(game(s) == 0);
+    /* The other player's pad can drive the menu without entering this player's gameplay state. */
+    menu_open = 1; other_pad_down = PAD(NORTH); CHECK(game(s) == 0);
+    CHECK((uint32_t)pad_raw_menu == PAD(NORTH));
     menu_open = 0; CHECK(game(s) == 0);
-    pads_down |= PAD(WEST) | PAD(DOWN); CHECK(game(s) == (SW(Y) | SW(DOWN)));
-    pads_down = 0; CHECK(game(s) == 0);
+    pads_down = PAD(NORTH) | PAD(DOWN); CHECK(game(s) == (SW(X) | SW(DOWN)));
+    pads_down = other_pad_down = 0; CHECK(game(s) == 0);
     puts("PASS: after the Insert menu each pad input waits until let go; the others and the sticks count at once");
     return 0;
 }
