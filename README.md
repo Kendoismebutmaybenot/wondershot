@@ -15,7 +15,7 @@ If you use linked game files with a `.nup`, keep the workspace's `dump` folder i
 When **Update Builder app** appears, it downloads the new Builder, installs it in a sibling `WondershotBuilder-updates` folder and
 opens it. The previous Builder stays available. **Update Wondershot** rebuilds the playable game.
 
-Wondershot is a static recompilation of **Super Mario Bros. Wonder – Switch 2 Edition** for PC, built on
+Wondershot is a static recompilation of **Super Mario Bros. Wonder â€“ Switch 2 Edition** for PC, built on
 [Longshot](https://git.magicbean.dev/MagicBeanDev/Longshot) by MagicBeanDev. It statically recompiles the game's own code
 for the PC, so you need your own legally dumped copy of the game. **No game files are included here, and none ever will be.**
 
@@ -30,6 +30,7 @@ for the PC, so you need your own legally dumped copy of the game. **No game file
 - Players 2-4, per-player controls, controller and keyboard assignment, per-player motion controls
 - Button prompts that follow the controller in use (a stand-in for the system button font)
 - The Poplin house dialogue and the Bellabel Park event softlocks above 60 fps fixed
+- The Wonder flight into space and the camera following the fall back down work above 60 fps (240 fps cap tested)
 - A Mario-themed Insert menu that uses the game's own font
 - DualSense HD haptics (over a cable) through [RenHDrum](https://github.com/trzz1214/RenHDrum) (MIT or Apache-2.0), built from its source in `third_party/renhdrum` and shipped in the builder
 - A builder app that makes the game folder from your dump, HDR shaders included, with a **Game settings** button that starts the game with its Insert menu already open
@@ -51,6 +52,7 @@ does only this step).
 
 ## Credits
 
+- **[SuperWonders](https://github.com/vfjoo888/SuperWonders)** by vfjoo888: the Switch 1 high-FPS camera and keep-jump corrections adapted for the Switch 2 Edition
 - **[Longshot](https://git.magicbean.dev/MagicBeanDev/Longshot)** by MagicBeanDev: the recompiler, runtime and renderer this is
   built on. Their original README is in [docs/LONGSHOT_README.md](docs/LONGSHOT_README.md)
 - The projects Longshot credits in turn (see its README and `third_party/`)

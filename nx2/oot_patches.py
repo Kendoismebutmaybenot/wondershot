@@ -579,31 +579,64 @@ def patch_wonder_seed(s):
     return s
 
 
-# Switch 2 Wonder's vertical course camera target and smoothing limit.
-WONDER_CAMERA_HEAD = "void f_8043d320(Ctx *__restrict A64_NOESC c) {\n"
-WONDER_CAMERA_DECL = ("extern void hos_wonder_camera_target(Ctx *);\n"
-                      "extern void hos_wonder_camera_speed(Ctx *);\n")
-WONDER_CAMERA_SITES = (
-    ("L_8043dfe8:;\n", "L_8043dfe8:;\n    hos_wonder_camera_target(c);\n"),
-    ("c->x[30] = 0x8043e164ULL; f_801ff4a0(c);",
-     "    hos_wonder_camera_speed(c);\nc->x[30] = 0x8043e164ULL; f_801ff4a0(c);"),
-)
-
-
+# Normalize the native vertical scroll camera in both directions. This replaces the older
+# follow-band patches, which must not run in addition to the native scroll correction.
 def patch_wonder_camera_follow(s):
-    include = '#include "a64.h"\n'
-    start = s.find(WONDER_CAMERA_HEAD)
-    if start < 0 or include not in s:
+    return patch_wonder_camera_scroll(s)
+
+
+# Switch 2 CourseCameraScroll::update_, verified by its call to GameCourseCamera::calc.
+WONDER_SCROLL_HEAD = "void f_801346e0(Ctx *__restrict A64_NOESC c) {\n"
+WONDER_SCROLL_DECL = ("extern uint64_t hos_wonder_camera_scroll_owner(Ctx *, uint64_t);\n"
+                     "extern void hos_wonder_camera_scroll_after(Ctx *, uint64_t, uint64_t, uint32_t, uint32_t);\n")
+
+
+def patch_wonder_camera_scroll(s):
+    start=s.find(WONDER_SCROLL_HEAD)
+    if start<0 or "hos_wonder_camera_scroll_owner(c," in s:
         return s
-    end = s.find("\nvoid f_", start + len(WONDER_CAMERA_HEAD))
+    end=s.find("\nvoid f_",start+len(WONDER_SCROLL_HEAD))
+    if end<0:
+        end=len(s)
+    body=s[start:end]
+    if body.count("f_8043d320(c);")!=1:
+        raise RuntimeError("Wonder scroll camera no longer calls expected camera calculation")
+    wrapper=(WONDER_SCROLL_HEAD+
+        "    const uint64_t node=c->x[0];\n"
+        "    const uint64_t pcam=hos_wonder_camera_scroll_owner(c,node);\n"
+        "    const uint32_t y=pcam?recomp_load32(c,pcam+0x2c):0;\n"
+        "    const uint32_t speed=pcam?recomp_load32(c,node+0xf4):0;\n"
+        "    wonder_camera_scroll_original(c);\n"
+        "    if(pcam) hos_wonder_camera_scroll_after(c,node,pcam,y,speed);\n}\n")
+    original="static void wonder_camera_scroll_original(Ctx *__restrict A64_NOESC c) {\n"
+    result=s[:start]+body.replace(WONDER_SCROLL_HEAD,original,1)+"\n"+wrapper+s[end:]
+    return result.replace('#include "a64.h"\n','#include "a64.h"\n'+WONDER_SCROLL_DECL,1)
+
+
+# Port the Switch 1 workaround around the complete Switch 2 PlayerSetGravityScale update.
+# Save its argument on the host stack: translated calls change guest registers during the update.
+WONDER_FLOAT_HEAD = "void f_815b7330(Ctx *__restrict A64_NOESC c) {\n"
+WONDER_FLOAT_DECL = "extern void hos_wonder_float_gravity(Ctx *, uint64_t, int);\n"
+
+
+def patch_wonder_float(s):
+    include = '#include "a64.h"\n'
+    start = s.find(WONDER_FLOAT_HEAD)
+    if start < 0 or include not in s or "hos_wonder_float_gravity(c," in s:
+        return s
+    end = s.find("\nvoid f_", start + len(WONDER_FLOAT_HEAD))
     if end < 0:
         end = len(s)
     body = s[start:end]
-    if "hos_wonder_camera_" in body or any(body.count(site) != 1 for site, _ in WONDER_CAMERA_SITES):
-        return s
-    for site, replacement in WONDER_CAMERA_SITES:
-        body = body.replace(site, replacement, 1)
-    return (s[:start] + body + s[end:]).replace(include, include + WONDER_CAMERA_DECL, 1)
+    original_head = "static void wonder_float_original(Ctx *__restrict A64_NOESC c) {\n"
+    wrapper = (WONDER_FLOAT_HEAD +
+               "    const uint64_t node = c->x[0];\n"
+               "    hos_wonder_float_gravity(c, node, 0);\n"
+               "    wonder_float_original(c);\n"
+               "    hos_wonder_float_gravity(c, node, 1);\n"
+               "}\n")
+    replacement = body.replace(WONDER_FLOAT_HEAD, original_head, 1) + "\n" + wrapper
+    return (s[:start] + replacement + s[end:]).replace(include, include + WONDER_FLOAT_DECL, 1)
 
 
 # A looping animation one frame long (the frozen Zoras under the ice in adult Zora's Domain: start 0, end 1) is one pose. At the
@@ -740,6 +773,7 @@ WHOLE_SITES = (
     ("void f_80652cb0(Ctx *__restrict A64_NOESC c) {@",
      "    c->x[22]=recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,1,3,c->fpcr,&c->fpsr);@",
      "c->x[19] + 2296"),
+
 )
 WHOLE_SITES = tuple((h.replace("@", "\n"), o.replace("@", "\n"), k) for h, o, k in WHOLE_SITES)
 WHOLE_MARK = "/* (the step's whole frames: nx2/oot_patches.py) */"
@@ -1754,6 +1788,10 @@ def patch_file(s, name, protect_hearts=False):
     if camera != out:
         lines.append("oot_patches: Wonder vertical camera follow in " + name)
         out = camera
+    wonder_float = patch_wonder_float(out)
+    if wonder_float != out:
+        lines.append("oot_patches: Wonder high-FPS float in " + name)
+        out = wonder_float
     out, loops = patch_loop_steps(out)
     if loops:
         lines.append("oot_patches: %d animation clock(s) with whole frames for a loop of one frame in %s" % (loops, name))

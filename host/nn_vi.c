@@ -498,65 +498,115 @@ static float wonder_camera_load_float(Ctx *c, uint64_t at) {
     return value;
 }
 
-static float wonder_camera_follow_step(Ctx *c, uint64_t follow) {
-    if (fps_max() <= 60) return 0.0f;
-    const float step = wonder_camera_load_float(c, follow + 0x104);
-    // Scripted and alternate camera modes keep their own target and movement limit.
-    if (!(step > 0.0f && step < 1.0f) || recomp_load8(c, follow + 0x20) ||
-        recomp_load32(c, follow + 0x108) || recomp_load32(c, follow + 0x10c)) return 0.0f;
-    return step;
+/* CourseCameraScroll::update_: Switch 1's tested correction, mapped to Switch 2.
+   The vertical target is already proportional to step; applying step again makes the camera too slow.
+   Apply it in both directions, including the descent after a Wonder effect has ended. */
+uint64_t hos_wonder_camera_scroll_owner(Ctx *c, uint64_t node) {
+    if(fps_max()<=60) return 0;
+    const uint64_t actor=wonder_node_actor(c,node);
+    const uint64_t impl=actor?recomp_load64(c,actor+0x1f0):0;
+    const uint64_t comps=impl?recomp_load64(c,impl+0x210):0;
+    if(!comps || recomp_load32(c,impl+0x208)<=0x4b) return 0;
+    return recomp_load64(c,comps+0x258);
 }
 
-void hos_wonder_camera_target(Ctx *c) {
-    const uint64_t follow = c->x[19];
-    const float step = wonder_camera_follow_step(c, follow);
-    if (step == 0.0f) return;
-
-    const float top_band = wonder_camera_load_float(c, follow + 0xac);
-    const float bottom_band = wonder_camera_load_float(c, follow + 0xb0);
-    const float half_height = wonder_camera_load_float(c, follow + 0x1d4);
-    if (!(bottom_band <= 0.0f && top_band >= 0.0f && half_height > 0.0f)) return;
-    const float player = wonder_camera_load_float(c, follow + 0x148);
-    const uint64_t target_at = c->x[31] + 0x7c;
-    const float target = wonder_camera_load_float(c, target_at);
-    const float low = wonder_camera_load_float(c, follow + 0x3c) + half_height;
-    const float high = wonder_camera_load_float(c, follow + 0x44) - half_height;
-    if (!(low < high)) return;
-
-    // Keep the player within the course's follow band and respect its camera bounds.
-    float corrected = target;
-    const float upper_margin = fminf(top_band, half_height);
-    const float lower_margin = fmaxf(bottom_band, -half_height);
-    if (player > target + upper_margin) corrected = player - upper_margin;
-    if (player < target + lower_margin) corrected = player - lower_margin;
-    if (corrected == target) return;
-    corrected = fminf(fmaxf(corrected, low), high);
-    if (fabsf(corrected - target) < 0.001f) return;
-
-    uint32_t bits;
-    memcpy(&bits, &corrected, sizeof bits);
-    recomp_store32_sp(c, target_at, bits);
+static float wonder_camera_scroll_delta(float delta, float ratio) {
+    const float scale=0.5f / -expm1f(-0.6931471805599453f*ratio);
+    return fminf(fmaxf(delta*scale,-0.75f*ratio),0.75f*ratio);
 }
 
-void hos_wonder_camera_speed(Ctx *c) {
-    const uint64_t follow = c->x[19];
-    const float step = wonder_camera_follow_step(c, follow);
-    if (step == 0.0f) return;
+void hos_wonder_camera_scroll_after(Ctx *c, uint64_t node, uint64_t pcam, uint32_t y_bits, uint32_t speed_bits) {
+    if(!pcam) return;
+    const float ratio=wonder_camera_load_float(c,node+0x104);
+    if(!(ratio>0.01f && ratio<0.99f)) return;
+    float before_y,before_speed;
+    memcpy(&before_y,&y_bits,4);memcpy(&before_speed,&speed_bits,4);
+    const float speed=wonder_camera_load_float(c,node+0xf4);
+    const float delta=speed-before_speed;
+    if(fabsf(delta)>1e-6f) {
+        const float k=-expm1f(-0.2876820724517809f*ratio);
+        const float target=(before_speed+delta/k)/ratio;
+        const float fixed=before_speed+fminf(fmaxf(k*(target-before_speed),-0.1f),0.1f);
+        uint32_t bits;memcpy(&bits,&fixed,4);recomp_store32_sp(c,node+0xf4,bits);
+    }
+    const float overshoot=wonder_camera_load_float(c,node+0xac);
+    if(fabsf(overshoot)<1.5f*ratio-1e-3f) return;
+    const float after_y=wonder_camera_load_float(c,pcam+0x2c);
+    const float step_y=after_y-before_y;
+    const float fixed_step=wonder_camera_scroll_delta(step_y,ratio);
+    const float extra=fixed_step-step_y;
+    if(fabsf(extra)<=1e-6f) return;
+    const float fixed_y=before_y+fixed_step;
+    const float target_y=wonder_camera_load_float(c,pcam+0x38)+extra;
+    uint32_t bits;memcpy(&bits,&fixed_y,4);recomp_store32_sp(c,pcam+0x2c,bits);
+    memcpy(&bits,&target_y,4);recomp_store32_sp(c,pcam+0x38,bits);
 
-    const float player = wonder_camera_load_float(c, follow + 0x148);
-    const float target = wonder_camera_load_float(c, c->x[31] + 0x7c);
-    const float previous = wonder_camera_load_float(c, c->x[29] - 0x64);
-    const float top = wonder_camera_load_float(c, follow + 0xac);
-    const float bottom = wonder_camera_load_float(c, follow + 0xb0);
-    if (!(bottom <= 0.0f && top >= 0.0f)) return;
-    if (!(player > previous + top && target > previous) &&
-        !(player < previous + bottom && target < previous)) return;
+}
 
-    // Let the normal smoothing reach its fractional step when the player is outside the band.
-    const float needed = -expm1f(-0.6931471805599453f * step) * fabsf(target - previous);
-    float limit;
-    memcpy(&limit, c->vreg[8], sizeof limit);
-    if (needed > limit) memcpy(c->vreg[8], &needed, sizeof needed);
+/* Switch 1's keep-jump workaround, with the Switch 2 player layout. Keep history per node/owner.
+   The wrapper runs before the original update and samples its flag after the original returns. */
+static SRWLOCK wonder_float_lock = SRWLOCK_INIT;
+static struct { uint64_t node, impl, used; unsigned active; } wonder_float_players[64];
+static uint64_t wonder_float_serial;
+
+static uint64_t wonder_float_value(Ctx *c, uint64_t bb, uint64_t key_at, int flag) {
+    const uint32_t key = recomp_load32(c, key_at);
+    if (!bb || key >= recomp_load32(c, bb + (flag ? 0x198 : 0xa8))) return 0;
+    const uint64_t values = recomp_load64(c, bb + (flag ? 0x1a0 : 0xb0));
+    return values ? values + (flag ? key : 4ULL * key) : 0;
+}
+
+void hos_wonder_float_gravity(Ctx *c, uint64_t node, int after) {
+    if (!node) return;
+    const uint64_t link = recomp_load64(c, node + 8);
+    const uint64_t actor = link ? recomp_load64(c, link + 8) : 0;
+    const uint64_t impl = actor ? recomp_load64(c, actor + 0x1f0) : 0;
+    const uint64_t bb = actor ? recomp_load64(c, actor + 0x1f8) : 0;
+    const uint64_t components = impl ? recomp_load64(c, impl + 0x210) : 0;
+    const uint64_t pc = components && recomp_load32(c, impl + 0x208) > 0x24
+            ? recomp_load64(c, components + 0x120) : 0;
+    if (!pc || !bb) return;
+    const uint64_t flag = wonder_float_value(c, bb, pc + 0x31c, 1);
+    if (!flag) return;
+    AcquireSRWLockExclusive(&wonder_float_lock);
+    unsigned slot = 0, oldest = 0;
+    while (slot < 64 && (wonder_float_players[slot].node != node || wonder_float_players[slot].impl != impl)) {
+        if (wonder_float_players[slot].used < wonder_float_players[oldest].used) oldest = slot;
+        slot++;
+    }
+    if (slot == 64) {
+        slot = oldest;
+        wonder_float_players[slot].node = node;
+        wonder_float_players[slot].impl = impl;
+        wonder_float_players[slot].active = 0;
+    }
+    wonder_float_players[slot].used = ++wonder_float_serial;
+    const unsigned was_active = wonder_float_players[slot].active;
+    if (after) wonder_float_players[slot].active = (recomp_load8(c, flag) & 1u) != 0;
+    ReleaseSRWLockExclusive(&wonder_float_lock);
+    if (after || !was_active || !(recomp_load8(c, node + 0x18) & 2u)) return;
+
+    const uint32_t bits = __atomic_load_n(&hos_frame_seconds_bits, __ATOMIC_RELAXED);
+    float seconds;
+    memcpy(&seconds, &bits, sizeof seconds);
+    const float ratio = seconds * 60.0f;
+    if (!(ratio > 0.01f && ratio < 0.99f)) return;
+    const uint64_t keep = wonder_float_value(c, bb, pc + 0x2ac, 1);
+    const uint64_t area = wonder_float_value(c, bb, pc + 0x320, 1);
+    const uint64_t mode = wonder_float_value(c, bb, pc + 0x380, 0);
+    const uint64_t gravity = wonder_float_value(c, bb, node + 0x64, 0);
+    if (!keep || !area || !mode || !gravity || !(recomp_load8(c, keep) & 1u) ||
+        !(recomp_load8(c, area) & 1u) || recomp_load32(c, mode) != 1 || recomp_load32(c, gravity) != 6) return;
+    const float velocity = wonder_camera_load_float(c, impl + 0x32c);
+    if (!(velocity > 0.0f && velocity < 39.1f)) return;
+    const float corrected = 39.1f;
+    uint32_t corrected_bits;
+    memcpy(&corrected_bits, &corrected, sizeof corrected_bits);
+    recomp_store32_sp(c, impl + 0x32c, corrected_bits);
+    recomp_store8_sp(c, flag, 1);
+    static unsigned logged;
+    if (__atomic_fetch_add(&logged, 1, __ATOMIC_RELAXED) < 12)
+        hos_log("wonder: Switch 1 float bypass restored speed %.3f -> 39.1 (step %.3f)", velocity, ratio);
 }
 
 volatile uint64_t hos_wonder_step_probe = 0;    /* (Wonder: its frame function's x19, set by the lifted step hook: nx2/oot_patches.py) */
