@@ -148,9 +148,7 @@ inline uint64_t texture_budget(uint64_t allowed, uint64_t vram, uint64_t ram, bo
     return integrated_texture_budget(texture_rule::integrated_bytes(allowed, vram, astc_on_cpu), ram, astc_on_cpu);
 }
 
-/// Whether the card counts as small for the textures' top levels (vk_texture.cpp low_vram_texture_mips, with Minimum's
-/// settings at the site): allowed 4.5 GiB or less, or an integrated GPU beside 16 GiB of RAM or less (an i3-1115G4's UHD
-/// Graphics was allowed 7.4 GB of 16 while Windows paged the game out)
+/// For the hardware report: allowed 4.5 GiB or less, or an integrated GPU with 16 GiB of RAM or less.
 inline bool small_vram_textures(uint64_t allowed, bool integrated, uint64_t ram) {
     return (allowed && allowed <= 4 * kGB + 512 * kMB) || (integrated && ram && ram <= 16 * kGB);
 }
@@ -429,8 +427,7 @@ struct DevicePolicy {
     bool pcache_small_pc = false;
 
     // ---- sizes ----
-    // The hardware half of the smaller top levels (policy_rule::small_vram_textures); the site adds Minimum's settings.
-    // RX_VK_LOW_VRAM_MIPS=0. Site (vk_texture.cpp low_vram_texture_mips), step 3
+    // Reports whether the GPU meets the low-memory thresholds. Texture trimming uses the Low-end mode setting.
     bool small_vram_textures = false;
     // Every large ASTC texture kept as BC3: allowed under 8.5 GB, or an integrated GPU (astc_bc_policy.h).
     // RX_VK_ASTC_BC_ALL. Site (vk_texture.cpp), step 3

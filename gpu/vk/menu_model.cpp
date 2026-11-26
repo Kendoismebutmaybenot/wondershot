@@ -587,6 +587,7 @@ PageBuilder& PageBuilder::row(Setting s, Place p) {
             "hud_buttons_scale", "hud_minimap_x", "hud_minimap_y", "hud_minimap_scale", "reset_hud_placement",
             "@Motion", "motion_controls", "motion_sensitivity_x", "motion_sensitivity_y", "invert_motion_x", "invert_motion_y",
             "motion_deadzone", "shadow_resolution", "discord_status", "bug_report",
+            "quality_preset",   // (Wondershot: Profile and SDR scaling are independent settings)
             "audio_output",    // (Speaker layout: Wonder is stereo only, host/nn_audio.c au_speakers)
             // (Wondershot, 2026-11-24: rows with no effect in Wonder) OoT's debug cheats, the microphone (Wonder has no voice input)
             // and the temporal upscaler (it hooks OoT's own anti-aliasing pass: no DLSS feature is ever made here).

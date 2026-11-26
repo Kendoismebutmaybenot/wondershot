@@ -1011,8 +1011,7 @@ void save() {
                 kept += line;
                 continue;
             }
-            // (memory_budget and auto_for too: save() writes them, and the file's old line, kept after it, won at the next start;
-            // auto_output, the Output resolution Auto once set, is no longer written: its old line is dropped)
+            // Drop retired preset keys and the old weak-laptop key on save.
             bool mine = key == "audio_output_device_id" || key == "audio_output_device_name" || key == "output_device" ||
                         key == "microphone_device" || key == "options_version" || key == "memory_budget" || key == "auto_for" ||
                         key == "auto_tuned" || key == "auto_output" || key == "auto_steps";
@@ -1023,6 +1022,7 @@ void save() {
             mine |= key == "mesh_shaders";
             // (and the VRAM budget row's, removed: one rule by the card, texture_budget.h and mirror_budget.h)
             mine |= key == "vram_budget";
+            mine |= key == "quality_preset" || key == "weak_laptop_mip_trim";
             mine |= key == "gpu_device_id";   // (the GPU device row's card: written below)
             for (const Row& r : rows)
                 if (!mine && r.value && key == ini_key(r)) mine = true;
@@ -1055,17 +1055,11 @@ void save() {
             fprintf(f, "fullscreen_monitor_id=%s\n", monitor_want.c_str());
             fprintf(f, "fullscreen_monitor_name=%s\n", monitor_saved_name.c_str());
         }
-        // (not a row: the preset Custom came from, whose mip trimming it keeps: opts.budget)
-        fprintf(f, "memory_budget=%d\n", opts.budget);
         // (the GPU device row's card itself, not only its place in the list: gpu_choice.h. A saved card not here this run, the
         // row still at the Auto it started on, stays saved for when it is back)
         const std::string card = opts.gpu_device > 0 ? gpu_choice::card_id(gpu_device_cards, opts.gpu_device - 1)
                                  : opts.gpu_device == 0 && gpu_card_missing ? gpu_saved_card : std::string();
         if (!card.empty()) fprintf(f, "gpu_device_id=%s\n", card.c_str());
-        if (auto_for) fprintf(f, "auto_for=%016llx\n", (unsigned long long)auto_for);   // (the hardware Auto (this PC) chose for)
-        if (auto_tuned) fprintf(f, "auto_tuned=%016llx\n", (unsigned long long)auto_tuned);   // (and measured in play for)
-        // (the tuning's steps so far and whether one went down: the no-seesaw rule and the two steps hold across restarts)
-        if (auto_for && auto_tuning.steps) fprintf(f, "auto_steps=%d,%d\n", auto_tuning.steps, auto_tuning.went_down ? 1 : 0);
         // (2: game_speed below 2 was only ever the old default, see menu_init; 3: the mouse's buttons are bindings, see
         // host/nn_hid.c binds_load; 4: Descriptor reuse on by default, see menu_init and vk_draw.cpp desc_slotgen_on; 5: the
         // Menu shortcut "Insert, F1 or Esc" by default, see menu_init; 6: the Aspect ratio's 16:9 from before moves on a
@@ -1205,7 +1199,8 @@ void weak_laptop_apply() {
     for (int* v : {&opts.framegen, &opts.intel_compiles, &opts.intel_quick}) env_release(v);
     opts.framegen = 0;
     opts.intel_compiles = 2, opts.intel_quick = 1;   // (2: one at a time, whatever the row's Auto is on this GPU)
-    opts.preset = 0;   // (Custom, Minimum's mip trimming kept: opts.budget)
+    opts.preset = 0;
+    opts.low_end_mode = 1;
     samplers_changed();   // (the upscalers' texture LOD bias follows the 3D's share)
     laptop_applied = true;
     menu_refresh = true;
@@ -3899,7 +3894,8 @@ void menu_init() {
     for (auto& count : item_counts) count.store(-1, std::memory_order_relaxed);
     bool has_options = false;
     bool has_output = false;   // (an output_res= line: the Output resolution chosen; none: hos_output_default, as the host)
-    bool has_memory_budget = false;   // (a file from before memory_budget: its preset's)
+    bool has_low_end_mode = false;
+    bool old_weak_laptop_mip_trim = false;
     const char* cheats = getenv("HOS_OOT_CHEATS");
     cheats_env = cheats && !strcmp(cheats, "1");
     if (cheats_env) {
@@ -3946,15 +3942,9 @@ void menu_init() {
             if (!strcmp(line, "options_version")) version = atoi(eq + 1);
             if (!strcmp(line, "dynamic_resolution")) old_dynres = atoi(eq + 1);
             if (!strcmp(line, "menu_size") && atoi(eq + 1) == 0) menu_auto = true;
-            if (!strcmp(line, "auto_for")) auto_for = strtoull(eq + 1, nullptr, 16);
             if (!strcmp(line, "gpu_device_id")) gpu_saved_card.assign(eq + 1, strcspn(eq + 1, " \t\r\n"));   // (menu_set_gpu_count)
-            if (!strcmp(line, "auto_tuned")) auto_tuned = strtoull(eq + 1, nullptr, 16);
-            if (!strcmp(line, "auto_steps")) {
-                int steps = 0, down = 0;
-                if (sscanf(eq + 1, "%d,%d", &steps, &down) == 2)
-                    auto_tuning.steps = std::max(steps, 0), auto_tuning.went_down = down != 0;
-            }
-            if (!strcmp(line, "memory_budget")) opts.budget = std::min(std::max(atoi(eq + 1), 0), 5), has_memory_budget = true;
+            has_low_end_mode |= !strcmp(line, "low_end_mode");
+            if (!strcmp(line, "weak_laptop_mip_trim")) old_weak_laptop_mip_trim = atoi(eq + 1) == 1;
             if (!strcmp(line, "microphone_device")) {   // (longshot: the microphone, by its name)
                 mic_want = mic_key(eq + 1);
             }
@@ -4021,11 +4011,11 @@ void menu_init() {
     // low-VRAM hardware without requiring the menu to render first.
     if (!has_options && env_on("RX_VK_LOW_SPEC")) {
         apply_preset(1);
+        opts.low_end_mode = 1;
         opts.upscale = 0;
         opts.sharpness = 0;
     }
-    if (opts.preset > 0 && !has_memory_budget) opts.budget = opts.preset;   // (a file from before memory_budget: its preset's)
-    if (opts.preset == kAutoPreset && !has_memory_budget) opts.budget = 0;   // (Auto: its tier's, menu_auto_for_gpu)
+    if (!has_low_end_mode && old_weak_laptop_mip_trim) opts.low_end_mode = 1;
     menu_debug_rows(opts.descriptor_reuse, opts.sampler_cache);   // (the Debug rows that apply in play: what was loaded)
     fps_level_now.store(fps_stats::level_of(opts.show_fps), std::memory_order_relaxed);
     output_field_show();   // (longshot: Custom output size, the size of the player's own, as the file has it)
@@ -4053,22 +4043,16 @@ void menu_init() {
     restart_init();   // (what this run started with: the rows that take a restart differ from it once changed)
 }
 
-/// (longshot) The Quality preset "Auto (this PC)", once the card is chosen (vk_main.cpp pick_device): the profile auto_settings.h
-/// picks from the hardware. A first start (no options file yet) starts on it. With Auto on, the profile is applied when the
-/// hardware it was chosen for changes (another card, its memory, the screen's size, a build with or without DLSS or FSR 4):
-/// the fingerprint is kept in the options file (auto_for=). Changing a row yourself comes back to Custom, and then nothing here
-/// touches the settings; the rows no preset sets (the Output resolution) leave it on Auto, and Auto never sets the Output
-/// resolution. The VRAM budgets are no preset's: one rule by the card (texture_budget.h, mirror_budget.h). An older or
-/// smaller card does not start with the full-size budget, which can lose the device at the first scene.
-/// RX_VK_AUTO_PRESET=0: a first start keeps the defaults.
-/// RX_VK_AUTO_PRESET_VRAM_MB=<n>: the card's memory taken as n MB, to try the choice for a smaller or larger card
+/// Choose the inherited hardware tier. RX_VK_AUTO_PRESET=1 can also apply the inherited
+/// Auto preset on a fresh start for diagnostics. Saved presets never select Auto.
+/// RX_VK_AUTO_PRESET_VRAM_MB=<n> tests the hardware choice with a different memory size.
 void menu_auto_for_gpu(const VkPhysicalDeviceProperties& props, ::auto_settings::Hardware hw) {
     const bool first = first_start;
     first_start = false;
     if (const char* e = getenv("RX_VK_AUTO_PRESET_VRAM_MB")) hw.vram_mb = (uint32_t)atoll(e);
     auto_choice = ::auto_settings::choose(hw);
     const uint64_t fp = auto_fp = ::auto_settings::fingerprint(hw, props.vendorID, props.deviceID);
-    if (first && (!env_int("RX_VK_AUTO_PRESET", 1) || env_on("RX_VK_LOW_SPEC"))) return;   // (off, or chosen already: menu_init)
+    if (first && (!env_int("RX_VK_AUTO_PRESET", 0) || env_on("RX_VK_LOW_SPEC"))) return;
     char hw_line[200];
     snprintf(hw_line, sizeof hw_line, "%s, %u MB of video memory, %s, screen %dx%d at %d Hz, %u MB of RAM, %d threads",
              props.deviceName, (unsigned)hw.vram_mb, hw.integrated ? "integrated" : "dedicated", hw.screen_w, hw.screen_h,
@@ -4078,8 +4062,6 @@ void menu_auto_for_gpu(const VkPhysicalDeviceProperties& props, ::auto_settings:
         logf("vk: Auto (this PC) would be: %s (%s)", auto_choice.why, hw_line);   // (for a bug report: what Auto would choose)
         return;
     }
-    // (an options file from the VRAM budget row, set under Auto: memory_budget=0, the preset Auto's tier is again, for Minimum's
-    // mip trimming: low_vram_texture_mips)
     if (opts.budget == 0) opts.budget = auto_choice.tier;
     if (fp == auto_for) {
         logf("vk: Auto (this PC): the settings chosen for this PC before (%s)", hw_line);
@@ -4180,11 +4162,6 @@ int menu_heart_protection() {
 int menu_player_flight() { return cheats_on() ? player_flight.load(std::memory_order_relaxed) : -1; }
 int menu_free_camera() { return cheats_on() ? free_camera.load(std::memory_order_relaxed) : 0; }
 int menu_link_speed() { return cheats_on() ? link_speeds[std::clamp(link_speed.load(std::memory_order_relaxed), 0, kLinkSpeeds - 1)] : 100; }
-int menu_memory_tier() {
-    if (opts.budget > 0) return opts.budget;
-    if (opts.preset > 0 && opts.preset < kAutoPreset) return opts.preset;   // (a file with a preset and memory_budget=0)
-    return auto_choice.tier;
-}
 /// The size the host draws the sun's cascades at (HOS_OPT_SHADOW_RES: 0 the game's 1600, 1 2200, 2 3072): the row's, or for
 /// Auto the one for the card's memory tier, the preset's (opts.budget) or else Auto's own for this PC (auto_choice): the
 /// game's on Minimum and Low (4 and 6 GB, where 113 MB is a lot), 2200 on Balanced (8 GB), 3072 from High (12 GB) up

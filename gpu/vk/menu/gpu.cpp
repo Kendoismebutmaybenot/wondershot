@@ -51,7 +51,15 @@ MENU_MODULE(gpu) {
               .restart = true,
               .preset_exempt = true,
               .text = MENU_HOOK([](int v) { return std::string(tx_gpu(v)); }),
-              .hint = hn_gpu});
+              .hint = hn_gpu})
+        .row({.key = "low_end_mode",
+              .label = "Low-end mode",
+              .help = "Uses less GPU memory by loading some large textures at lower detail. Applies after a restart.",
+              .kind = menu::Kind::Toggle,
+              .value = &opts.low_end_mode,
+              .lo = 0, .hi = 1,
+              .restart = true,
+              .preset_exempt = true});
     menu::tab("debug")
         .row({.key = "robust_buffers",
               .label = "Robust buffers",

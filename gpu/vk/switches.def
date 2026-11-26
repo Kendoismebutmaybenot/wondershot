@@ -497,7 +497,7 @@ SW(RX_VK_LOG_WRITEBACK, diag, bool, "off", "Logs programs binding written storag
 SW(RX_VK_LOG_WRITTEN, diag, bool, "off", "Logs every storage buffer range a program writes, once each, 300 at most.")
 SW(RX_VK_LOWER_SKIP, diag, string, "empty: none skipped", "Comma list of program key prefixes left unlowered, as if they did not lower, for a bisection.")
 SW(RX_VK_LOW_SPEC, attempt, bool, "off", "Opt-in low-VRAM profile: first run starts on preset 1 without upscale filter, no staging blocks kept, no capture copy helpers.")
-SW(RX_VK_LOW_VRAM_MIPS, hw, bool, "on at Minimum's settings (or Custom with none, where Auto picks Minimum) when the driver allows 4.5 GiB or less, or on an integrated GPU with 16 GB of RAM...", "=0 turns off the smaller texture limits (1024 wide, 8 MB) used on low-VRAM PCs at Minimum.")
+SW(RX_VK_LOW_VRAM_MIPS, hw, bool, "follows Low-end mode", "=0 disables Low-end mode's smaller texture limits (1024 wide, 8 MB).")
 SW(RX_VK_MALLOC_TRIM_MB, tune, int, "192 MB free in the heap (64 while Linux memory pressure is on)", "Sets how many MB of free malloc arena memory trigger a malloc_trim on a worker; 0 never trims.")
 SW(RX_VK_MARKERS_V205, attempt, bool, "off: markers avoid the registers the current lowering reserves", "Lowering picks marker registers as v2.0.5 did, avoiding only the native high registers: an A/B for the AMD stripes report.")
 SW(RX_VK_MASK_BLEND, attempt, float, "0: off", "Blends a mask with its history at that weight (0-0.95) to stabilise streaks.")

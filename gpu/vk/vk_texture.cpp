@@ -2478,26 +2478,12 @@ uint64_t system_ram_bytes() {
     return v;
 }
 bool low_vram_texture_mips() {
-    static const bool disabled = [] {
-        const char* e = getenv("RX_VK_LOW_VRAM_MIPS");
-        return e && env_value_off(e);
+    // The renderer must use the same limits for all textures and scratch images in this session.
+    static const bool enabled = [] {
+        const char* override = getenv("RX_VK_LOW_VRAM_MIPS");
+        return opts.low_end_mode != 0 && !(override && env_value_off(override));
     }();
-    // A driver budget, sampled once, not the card's physical capacity. The
-    // preset is checked for each texture so changing it in the menu still works.
-    static const bool small = [] {
-        uint64_t used = 0, allowed = 0;
-        return vram_usage(&used, &allowed) && allowed && allowed <= (4ull << 30) + (512ull << 20);
-    }();
-    // (longshot) An integrated GPU's budget is a share of the system's RAM, which the game shares: an i3-1115G4's UHD Graphics
-    // with 16 GB was allowed 7.4 GB, past the 4.5 GiB, while the game, 2 GB of textures and the driver held 12-13 GB and
-    // Windows paged the game out (3-6 fps). With 16 GB of RAM or less it counts as small whatever the driver allows
-    static const bool shared = dev.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU && system_ram_bytes() &&
-                               system_ram_bytes() <= (16ull << 30);
-    // (Minimum's settings, memory tier 1: Minimum, Auto (this PC) at Minimum's tier, or Custom after either, which keeps them: the
-    // Debug tab's Set up for a weak laptop leaves the preset on Custom. Custom with no preset behind it goes by Auto's tier for
-    // this PC: a Steam Deck on an options file from before memory_budget drew the terrain's 1365x1365x90 arrays at full size, and
-    // the arrivals that decode them again took twice as long, 1.0 against 2.2-2.4 s at the save's load)
-    return !disabled && (small || shared) && (opts.preset == 1 || menu_memory_tier() == 1);
+    return enabled;
 }
 
 static std::unique_ptr<Texture> probe_texture_metadata() {
@@ -2570,7 +2556,7 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
             x.sparse = np > 0;
         }
         // (RX_VK_TEX_SKIP_MB: from how many MB as RGBA8 a decoded ASTC texture wider than max_dim loses its top levels;
-        // 8 on Minimum with a small driver budget, otherwise 64. A 3072-square image is about 48 MB decoded:
+        // 8 with Low-end mode, otherwise 64. A 3072-square image is about 48 MB decoded:
         // below 64, and too wide for the BC3 scratch. Explicit overrides keep main's existing parsing.)
         static const char* skip_env = getenv("RX_VK_TEX_SKIP_MB");
         const uint64_t skip_from = (uint64_t)(skip_env ? atoi(skip_env) : small_mips ? 8 : 64) << 20;

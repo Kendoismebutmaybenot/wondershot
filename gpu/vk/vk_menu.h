@@ -81,6 +81,7 @@ struct Options {
     int compact_menu_key = 0; // 0 Right Shift, 1 Right Ctrl (key to switch to or open the compact menu)
     int menu_size = 2;   // (longshot) the overlays' size: 1 Small, 2 Medium, 3 Large (gpu/vk/vk_ui.h unit; an older file's 0 Auto: Medium)
     int fullscreen = 0;   // borderless, at the monitor's size: F11 is the same setting
+    int low_end_mode = 0;   // (trim large textures and reduce decoding scratch after a restart)
     int gpu_device = 0;   // graphics card index: 0 Auto, 1..N device 0..N-1 (gpu/vk/vk_main.cpp; RX_VK_DEVICE)
     int pad_background = 0;   // the controllers count while another window has the focus (host/nn_hid.c; HOS_INPUT_BACKGROUND)
     int mouse_native = 0; // the mouse turns the camera's own angles (host/mouse_native.c); 0: as the right stick; 2: off (never captured)
@@ -136,10 +137,7 @@ struct Options {
                            // the optimized one bound once made (vk_draw.cpp compute_optimize; RX_VK_COMPUTE_QUICK_FIRST over it)
     int preset = 0;       // quality preset: 0 Custom, 1 Minimum (4GB), 2 Low (6GB), 3 Balanced (8GB), 4 High (12GB), 5 Ultra (16GB+),
                           // 6 Auto (this PC), kAutoPreset (its tier: budget)
-    int budget = 0;       // the preset the settings came from, kept when another row turns the preset to Custom: Minimum's (1)
-                          // trims the textures' mips on a small card (vk_texture.cpp low_vram_texture_mips). Saved as memory_budget;
-                          // 0: none, and Custom goes by Auto (this PC)'s tier (menu_memory_tier). No preset or row sets the
-                          // VRAM budgets: one rule by the card (texture_budget.h, mirror_budget.h)
+    int budget = 0;       // inherited preset tier for the Ocarina of Time shadow setting; 0 uses the hardware tier
     int audio_output = 0; // (longshot) the speakers the game mixes for: 0 Auto (the default output's), 1 Stereo, 2 5.1, 3 Mono; layout read at the start (host/nn_audio.c; HOS_AUDIO_CHANNELS)
     int discord = 1;   // (longshot) the Discord status (host/discord_rpc.c): 1 on, shown while a Discord client runs on this PC
     int debug_tools = 0;   // (longshot) the Debug tab's tools (flight, free camera, teleport, inventory): 0 off; HOS_OOT_CHEATS=1 also turns them on
@@ -199,10 +197,6 @@ int menu_link_speed();   // (Movement speed in percent, 100 while the tools are 
 int menu_transition_autosave();
 void menu_sync_hud_placement();
 int menu_hud_option(int id);
-/// The memory tier the settings go by (1 Minimum ... 5 Ultra): the preset Custom came from (memory_budget), else the preset's,
-/// else, for Custom with none (Custom chosen on the preset row, or an options file from before memory_budget), Auto (this PC)'s
-/// tier for this PC; 0 before the card is known
-int menu_memory_tier();
 int menu_shadow_res();   // (Shadow resolution, HOS_OPT_SHADOW_RES: the size drawn, Auto resolved)
 int menu_damage_taken();   // (Damage taken, HOS_OPT_DAMAGE_TAKEN: 1, Normal, while the tools are off)
 int menu_take_cheat_action();

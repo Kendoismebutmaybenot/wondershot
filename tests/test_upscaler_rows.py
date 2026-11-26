@@ -39,7 +39,7 @@ def main():
     menu = menu_text(ROOT) if (ROOT / "gpu" / "vk" / "menu").is_dir() else \
         (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
     # the picture's way, top to bottom: the output, what fills it, the 3D's size and its sharpening (Resolution and
-    # upscaling); then the frame rows, Reflex with them (Frame generation and latency); then the window (Screen)
+    # upscaling); then the frame rows, Reflex with them (High FPS and latency); then the window (Screen)
     order = ['"Output resolution", &opts.output_res', '"Upscaler", &opts.dlss', '"DLSS model", &opts.dlss_model',
              '"Render resolution", &opts.resolution', '"Sharpness", &opts.sharpness',
              '"Frame generation", &opts.framegen', '"Frame generation by", &opts.framegen_by',

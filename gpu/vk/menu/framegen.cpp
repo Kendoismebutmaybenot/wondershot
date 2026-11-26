@@ -205,7 +205,7 @@ const char* tx_fps_cap(int v) {
 
 MENU_MODULE(framegen) {
     menu::tab("graphics")
-        .heading("framegen", "Frame generation and latency", menu::after("resolution"))
+        .heading("framegen", "High FPS and latency", menu::after("resolution"))
         .row({.key = "frame_generation",
               .label = "Frame generation",
               .help = "Makes frames between the game's own, for smoother motion, at a little input delay. Fast motion or camera cuts can "
@@ -231,7 +231,7 @@ MENU_MODULE(framegen) {
               .help = "Limits frames rendered by the game. Generated frames are additional. Changes at once. "
                       "Past 60 is experimental: the game keeps real time, but some cutscenes and bosses can misbehave (Gohma, the intro's "
                       "narration). 60 is the safe choice. Uncapped: as fast as the PC can, still at real time; with V-Sync on, the display's "
-                      "refresh rate is the limit. 30 FPS always uses real-time game speed, even when Game speed is Per frame.",
+                      "refresh rate is the limit.",
               .value = &opts.fps_cap,
               .lo = -1, .hi = 6,
               .preset_exempt = true,
