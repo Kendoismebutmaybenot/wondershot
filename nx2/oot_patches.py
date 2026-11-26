@@ -613,6 +613,41 @@ def patch_wonder_camera_scroll(s):
     return result.replace('#include "a64.h"\n','#include "a64.h"\n'+WONDER_SCROLL_DECL,1)
 
 
+# Port SuperWonders da6861d1's Dolphin Kick counter correction to Switch 2.
+# PlayerComponent::calc truncates its step once, then adds that same integer to
+# +0x89c and +0x8a0. Carry fractions at that conversion instead of repairing the
+# counters after calc: the game's later resets and state changes stay authoritative.
+WONDER_PLAYER_COUNTER_HEAD = "void f_802ecb20(Ctx *__restrict A64_NOESC c) {\n"
+WONDER_PLAYER_COUNTER_OLD = (
+    "    c->x[8]=recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,1,3,c->fpcr,&c->fpsr);\n"
+    "    recomp_store32_sp(c,c->x[19] + 2184,(uint64_t)0);\n"
+    "    recomp_store32_sp(c,c->x[19] + 2196,(uint64_t)0);\n")
+WONDER_PLAYER_COUNTER_NEW = WONDER_PLAYER_COUNTER_OLD.replace(
+    "recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,1,3,c->fpcr,&c->fpsr)",
+    "hos_frame_whole(c->x[19] + 2204, (uint32_t)c->vreg[0][0])")
+
+
+def patch_wonder_player_counter(s):
+    start = s.find(WONDER_PLAYER_COUNTER_HEAD)
+    if start < 0:
+        return s
+    end = s.find("\nvoid f_", start + len(WONDER_PLAYER_COUNTER_HEAD))
+    if end < 0:
+        end = len(s)
+    body = s[start:end]
+    if WONDER_PLAYER_COUNTER_NEW in body:
+        return s
+    if (body.count(WONDER_PLAYER_COUNTER_OLD) != 1 or
+            body.count("recomp_store32_sp(c,c->x[19] + 2204,c->x[9]);") != 1 or
+            body.count("recomp_store32_sp(c,c->x[19] + 2208,c->x[8]);") != 1):
+        raise RuntimeError("Wonder player counters no longer match expected step/addition sites")
+    body = body.replace(WONDER_PLAYER_COUNTER_OLD, WONDER_PLAYER_COUNTER_NEW, 1)
+    out = s[:start] + body + s[end:]
+    if WHOLE_DECL not in out:
+        out = out.replace('#include "a64.h"\n', '#include "a64.h"\n' + WHOLE_DECL, 1)
+    return out
+
+
 # QueryKeepBoolTrueByTimer must keep the update which crosses its deadline.
 # Linked Blewbirds feed this pulse into a held-condition delay of the same length.
 # Testing only the new time drops the pulse before that delay can finish unless the
@@ -1880,6 +1915,10 @@ def patch_file(s, name, protect_hearts=False):
     if camera != out:
         lines.append("oot_patches: Wonder vertical camera follow in " + name)
         out = camera
+    player_counter = patch_wonder_player_counter(out)
+    if player_counter != out:
+        lines.append("oot_patches: Wonder player counters carry fractional ticks in " + name)
+        out = player_counter
     pulse = patch_wonder_timer_pulse(out)
     if pulse != out:
         lines.append("oot_patches: Wonder timer pulses retain the deadline crossing in " + name)

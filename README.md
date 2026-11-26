@@ -52,7 +52,7 @@ does only this step).
 
 ## Credits
 
-- **[SuperWonders](https://github.com/vfjoo888/SuperWonders)** by vfjoo888: the Switch 1 high-FPS camera and keep-jump corrections adapted for the Switch 2 Edition
+- **[SuperWonders](https://github.com/vfjoo888/SuperWonders)** by vfjoo888: the Switch 1 high-FPS camera, keep-jump and [Dolphin Kick counter corrections](https://github.com/vfjoo888/SuperWonders/commit/da6861d1b181f95135df37be2641d2e9539d37c1) adapted for the Switch 2 Edition
 - **[Longshot](https://git.magicbean.dev/MagicBeanDev/Longshot)** by MagicBeanDev: the recompiler, runtime and renderer this is
   built on. Their original README is in [docs/LONGSHOT_README.md](docs/LONGSHOT_README.md)
 - The projects Longshot credits in turn (see its README and `third_party/`)
