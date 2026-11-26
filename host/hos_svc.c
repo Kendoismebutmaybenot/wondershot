@@ -364,6 +364,41 @@ static void query_memory(uint64_t out, uint64_t addr) {
 #define CUR_THREAD 0xFFFF8000u
 static HosThread *thread_handle(uint32_t h) { return h == CUR_THREAD ? hos_self() : hos_thread_by_handle(h); }
 
+/* An SDK function the host does not implement (gen/a64_stubs.c, nx2/standalone.py): its first call is logged, and it answers 0.
+   The runtime's own fallback (third_party/a64-kit/rt/a64_rt.c) wrote to stderr, which a Windows launch never shows, so these
+   calls never reached wondershot.log. A stub whose 0 means "not yet" hangs the game without a word: every nn::audio Delay call
+   was one, and IsDelayRemovable's 0 kept Swamp Pipe Crawl's course clear waiting forever (issue #7). The name is the symbol's
+   nested name joined with "::" (nn::audio::AddReverb), the mangled symbol after it; lr is the game's caller. */
+void hos_stub_name(const char *sym, char *out, size_t size) {
+    size_t n = 0;
+    const char *p = sym;
+    if (size) out[0] = 0;
+    if (strncmp(p, "_ZN", 3)) {
+        snprintf(out, size, "%s", sym);
+        return;
+    }
+    p += 3;
+    if (*p == 'K') p++;
+    while (*p >= '0' && *p <= '9') {
+        size_t len = 0;
+        while (*p >= '0' && *p <= '9') len = len * 10 + (size_t)(*p++ - '0');
+        if (strlen(p) < len) break;
+        if (n && n + 2 < size) out[n++] = ':', out[n++] = ':';
+        for (size_t i = 0; i < len && n + 1 < size; i++) out[n++] = p[i];
+        p += len;
+    }
+    if (n < size) out[n] = 0;
+    if (!n) snprintf(out, size, "%s", sym);
+}
+void a64_unimplemented(Ctx *c, const char *sym, int *seen) {
+    if (!__atomic_exchange_n(seen, 1, __ATOMIC_RELAXED)) {
+        char name[160];
+        hos_stub_name(sym, name, sizeof name);
+        hos_log("stub: %s is not implemented, answered 0 (lr %#llx; %s)", name, (unsigned long long)c->x[30], sym);
+    }
+    c->x[0] = 0;
+}
+
 void a64_svc(Ctx *c, uint32_t imm) {
     hos_vcore_checkpoint();
     switch (imm) {
