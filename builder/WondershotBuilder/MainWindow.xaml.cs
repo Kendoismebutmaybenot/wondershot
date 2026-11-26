@@ -464,7 +464,7 @@ public partial class MainWindow : Window
             if (builderTag != null)
             {
                 builderUpdateTag = builderTag;
-                BuilderUpdateButton.ToolTip = $"Download and open Wondershot Builder {builderTag}.";
+                BuilderUpdateButton.ToolTip = $"Update Wondershot Builder to {builderTag} and reopen it.";
                 BuilderUpdateButton.Visibility = Visibility.Visible;
             }
             if (answer == null || !answer.StartsWith("available ")) return;
@@ -510,11 +510,7 @@ public partial class MainWindow : Window
             {
                 try
                 {
-                    using var started = Process.Start(new ProcessStartInfo(exe)
-                    {
-                        WorkingDirectory = Path.GetDirectoryName(exe)!, UseShellExecute = false,
-                    });
-                    if (started == null) throw new IOException("The new Builder could not be started.");
+                    BuilderUpdate.Start(exe, AppContext.BaseDirectory);
                     Close();
                     return;
                 }
