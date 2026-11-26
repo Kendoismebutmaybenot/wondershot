@@ -14,13 +14,15 @@ import oot_patches as P
 BODY = (P.WONDER_PLAYER_COUNTER_HEAD + '''
     c->x[19]=c->x[0];
     c->x[9]=recomp_load32(c,c->x[19] + 2204);
-''' + P.WONDER_PLAYER_COUNTER_OLD + '''
+    c->x[8]=recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,1,3,c->fpcr,&c->fpsr);
+    recomp_store32(c,c->x[19] + 2184,(uint64_t)0);
+    recomp_store32(c,c->x[19] + 2196,(uint64_t)0);
     c->x[9]+=c->x[8];
-    recomp_store32_sp(c,c->x[19] + 2204,c->x[9]);
+    recomp_store32(c,c->x[19] + 2204,c->x[9]);
     c->x[8]+=recomp_load32(c,c->x[19] + 2208);
-    recomp_store32_sp(c,c->x[19] + 2208,c->x[8]);
-    if(c->x[1]&1) recomp_store32_sp(c,c->x[19] + 2204,0);
-    if(c->x[1]&2) recomp_store32_sp(c,c->x[19] + 2208,0);
+    recomp_store32(c,c->x[19] + 2208,c->x[8]);
+    if(c->x[1]&1) recomp_store32(c,c->x[19] + 2204,0);
+    if(c->x[1]&2) recomp_store32(c,c->x[19] + 2208,0);
 }
 ''')
 PREAMBLE = r'''
@@ -34,7 +36,7 @@ static FrameWhole clock_state;
 static int carry=1;
 uint32_t hos_frame_whole(uint64_t at,uint32_t bits){return frame_whole(&clock_state,at,bits,carry);}
 static uint32_t recomp_load32(Ctx*c,uint64_t p){uint32_t v;memcpy(&v,(void*)p,4);return v;}
-static void recomp_store32_sp(Ctx*c,uint64_t p,uint64_t v){uint32_t b=v;memcpy((void*)p,&b,4);}
+static void recomp_store32(Ctx*c,uint64_t p,uint64_t v){uint32_t b=v;memcpy((void*)p,&b,4);}
 '''
 MAIN = r'''
 static void tick(Ctx*c,uint8_t*pc,float step,int reset){
@@ -74,6 +76,13 @@ int main(void){
 
 
 class DolphinCounterTests(unittest.TestCase):
+    def test_cached_unmarked_stores_are_preserved(self):
+        before = '#include "a64.h"\n' + BODY.replace('recomp_store32(', 'recomp_store32_sp(')
+        out = P.patch_wonder_player_counter(before)
+        self.assertIn('hos_frame_whole(c->x[19] + 2204,', out)
+        self.assertEqual(out.count('recomp_store32_sp('), before.count('recomp_store32_sp('))
+        self.assertEqual(P.patch_wonder_player_counter(out), out)
+
     def test_fractional_player_ticks(self):
         cc = os.environ.get('WONDER_TEST_CC') or shutil.which('clang') or shutil.which('gcc')
         if not cc:
@@ -98,6 +107,14 @@ class DolphinCounterTests(unittest.TestCase):
         self.assertTrue(out.endswith(tail))
         self.assertEqual(P.patch_wonder_player_counter(out), out)
         self.assertEqual(P.patch_wonder_player_counter(tail), tail)
+        self.assertEqual(out.count('recomp_store32('), before.count('recomp_store32('))
+        for offset in (2184, 2196, 2204, 2208):
+            with self.subTest(offset=offset), self.assertRaises(RuntimeError):
+                P.patch_wonder_player_counter(before.replace('+ %d,' % offset, '+ 2212,'))
+        with self.assertRaises(RuntimeError):
+            P.patch_wonder_player_counter(before.replace(
+                '    recomp_store32(c,c->x[19] + 2204,c->x[9]);',
+                '    recomp_store32(c,c->x[19] + 2204,c->x[9]);\n' * 2))
         with self.assertRaises(RuntimeError):
             P.patch_wonder_player_counter(before.replace('+ 2208,', '+ 2212,'))
         self.assertIn(P.WONDER_PLAYER_COUNTER_NEW, P.patch_file(before, 'test.c')[0])

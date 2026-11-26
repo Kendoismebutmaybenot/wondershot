@@ -620,8 +620,8 @@ def patch_wonder_camera_scroll(s):
 WONDER_PLAYER_COUNTER_HEAD = "void f_802ecb20(Ctx *__restrict A64_NOESC c) {\n"
 WONDER_PLAYER_COUNTER_OLD = (
     "    c->x[8]=recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,1,3,c->fpcr,&c->fpsr);\n"
-    "    recomp_store32_sp(c,c->x[19] + 2184,(uint64_t)0);\n"
-    "    recomp_store32_sp(c,c->x[19] + 2196,(uint64_t)0);\n")
+    "    recomp_store32(c,c->x[19] + 2184,(uint64_t)0);\n"
+    "    recomp_store32(c,c->x[19] + 2196,(uint64_t)0);\n")
 WONDER_PLAYER_COUNTER_NEW = WONDER_PLAYER_COUNTER_OLD.replace(
     "recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,1,3,c->fpcr,&c->fpsr)",
     "hos_frame_whole(c->x[19] + 2204, (uint32_t)c->vreg[0][0])")
@@ -635,13 +635,20 @@ def patch_wonder_player_counter(s):
     if end < 0:
         end = len(s)
     body = s[start:end]
-    if WONDER_PLAYER_COUNTER_NEW in body:
-        return s
-    if (body.count(WONDER_PLAYER_COUNTER_OLD) != 1 or
-            body.count("recomp_store32_sp(c,c->x[19] + 2204,c->x[9]);") != 1 or
-            body.count("recomp_store32_sp(c,c->x[19] + 2208,c->x[8]);") != 1):
+    # Fresh lifts use tracked stores; older cached lifts can use the unmarked
+    # helper. Match either form without changing the lifter's chosen stores.
+    for helper in ("recomp_store32", "recomp_store32_sp"):
+        old = WONDER_PLAYER_COUNTER_OLD.replace("recomp_store32", helper)
+        new = WONDER_PLAYER_COUNTER_NEW.replace("recomp_store32", helper)
+        if new in body:
+            return s
+        if (body.count(old) == 1 and
+                body.count(helper + "(c,c->x[19] + 2204,c->x[9]);") == 1 and
+                body.count(helper + "(c,c->x[19] + 2208,c->x[8]);") == 1):
+            body = body.replace(old, new, 1)
+            break
+    else:
         raise RuntimeError("Wonder player counters no longer match expected step/addition sites")
-    body = body.replace(WONDER_PLAYER_COUNTER_OLD, WONDER_PLAYER_COUNTER_NEW, 1)
     out = s[:start] + body + s[end:]
     if WHOLE_DECL not in out:
         out = out.replace('#include "a64.h"\n', '#include "a64.h"\n' + WHOLE_DECL, 1)
