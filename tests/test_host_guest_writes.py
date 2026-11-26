@@ -61,7 +61,7 @@ ALLOWED = {
     "host/nn_applet.c": [
         (["memcpy(GP(ARG(0)), &one, 4)", "memcpy(GP(ARG(1)), &one, 4)", "memset(GP(ARG(0)), 0, 33)", '"Player"', '"lp1"',
           "memcpy(GP(out), ct, 8)", "memset(GP(info), 0, 0x18)", '"UTC"', "memset(GP(ARG(0)), 0, 0xD0)",
-          "memset(GP(ARG(0)), 0, 16)", '"1.8.0"'], OUT),
+          "memset(GP(ARG(0)), 0, 16)", '"1.2.1"'], OUT),
     ],
     "host/nn_audio.c": [
         (["memset(GP(ARG(0)), 0, 256)", '"MainAudioOut"', "memset(GP(ARG(3)), 0, (size_t)bytes)",

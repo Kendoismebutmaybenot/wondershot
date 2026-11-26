@@ -567,7 +567,8 @@ HLE(_ZN2nn2oe17DisableScreenShotEv) {}
 /* GetDisplayVersion(DisplayVersion*): a 16-byte string */
 HLE(_ZN2nn2oe17GetDisplayVersionEPNS0_14DisplayVersionE) {
     memset(GP(ARG(0)), 0, 16);
-    memcpy(GP(ARG(0)), "1.8.0", 5);
+    /* Nintendo display version for the supported Switch 2 Edition build (ec47e6f8). */
+    memcpy(GP(ARG(0)), "1.2.1", 5);
 }
 /* nn::camera::sdk::CreateCameraContext(gsdrv::UniqueNativeHandle*) -> Result: no camera (GameChat's video), so the
    game does not open the camera service through a handle it never got */
