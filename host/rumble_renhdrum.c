@@ -133,8 +133,13 @@ int rh_load(void) {
 static SRWLOCK lk = SRWLOCK_INIT;
 static SRWLOCK life = SRWLOCK_INIT;   /* (opening and closing: the pad thread's, and the game's end; never inside lk) */
 static int closed;                    /* (the game is over: nothing opens again) */
-static int64_t at[2];                 /* when each side last sent (0 never) */
-static int quiet[2] = {1, 1};
+static struct {
+    void *pad;
+    int64_t at[2];                    /* when each side last sent (0 idle) */
+    float last[2][4];
+    uint32_t fed[2];
+} players[VIB_PLAYERS];
+static uint32_t feed_serial;
 static int testing;
 static volatile LONG gain_percent = 100;
 static RenHdcDualSenseDsp *usb_dsp, *bt_dsp, *sv_dsp;   /* (sv: a Steam Controller (2026)'s grips) */
@@ -143,8 +148,6 @@ static void *usb_pad, *bt_pad, *sv_pad;
    same vibration, the motors' heavy hits a little deeper. Off: it plays as RenHDrum 0.4 did, the speaker at 0 and the
    Bluetooth report the plain 0x32) */
 static volatile LONG hd_on = 1;
-static float last[2][4] = {{0.0f, RH_FREQ_LOW, 0.0f, RH_FREQ_HIGH}, {0.0f, RH_FREQ_LOW, 0.0f, RH_FREQ_HIGH}};
-static uint32_t fed[2];               /* (each side's values sent so far: a trigger's "fresh") */
 /* (each path's two triggers, left then right, made while HD Haptics plays on it; the pad thread updates them) */
 static RenHdcTriTrigger *usb_tri[2], *bt_tri[2];
 static uint32_t usb_seen[2], bt_seen[2];
@@ -159,31 +162,57 @@ static struct {
 
 static int64_t now_us(void) { return hos_now_ns() / 1000; }
 
-static void feed(int side, float al, float fl, float ah, float fh) {   /* (lk held) */
+/* A null pad is used for the settings test, which plays on every device. */
+static void output(void *pad, int side, const float v[4]) {   /* lk held */
     const bool right = side == 1;
     const int64_t us = now_us();
-    last[side][0] = al, last[side][1] = fl, last[side][2] = ah, last[side][3] = fh, fed[side]++;
-    if (usb_dsp) rh.dualsense_dsp_set_half_target(usb_dsp, right, al, fl, ah, fh);
-    if (bt_dsp) rh.dualsense_dsp_set_half_target(bt_dsp, right, al, fl, ah, fh);
-    if (sv_dsp) rh.dualsense_dsp_set_half_target(sv_dsp, right, al, fl, ah, fh);
+    const float al = v[0], fl = v[1], ah = v[2], fh = v[3];
+    if (usb_dsp && (!pad || pad == usb_pad)) rh.dualsense_dsp_set_half_target(usb_dsp, right, al, fl, ah, fh);
+    if (bt_dsp && (!pad || pad == bt_pad)) rh.dualsense_dsp_set_half_target(bt_dsp, right, al, fl, ah, fh);
+    if (sv_dsp && (!pad || pad == sv_pad)) rh.dualsense_dsp_set_half_target(sv_dsp, right, al, fl, ah, fh);
     /* (the Switch engine has no gain of its own: the strength scales what it is given, for testers' runs) */
     const float g = vibration_gain((int)gain_percent);
     const float sal = al * g > 1.0f ? 1.0f : al * g, sah = ah * g > 1.0f ? 1.0f : ah * g;
     for (int i = 0; i < RH_PADS; i++) {
+        if (pad && pad != pads[i].pad) continue;
         if (pads[i].xbox) rh.xbox_rumble_push_half_sample(pads[i].xbox, us, right, al, fl, ah, fh);
         if (pads[i].engine) rh.engine_push_half_sample(pads[i].engine, us, right, sal, fl, sah, fh);
     }
 }
 
-void rh_push(int side, const float v[4]) {
-    if (!rh_ok || side < 0 || side > 1 || !v) return;
+static const float silent[4] = {0.0f, RH_FREQ_LOW, 0.0f, RH_FREQ_HIGH};
+
+static void remember(int player, int side, const float v[4], int64_t at) {   /* lk held */
+    memcpy(players[player].last[side], v, sizeof players[player].last[side]);
+    players[player].fed[side] = ++feed_serial;
+    players[player].at[side] = at;
+}
+
+void rh_route_players(void *const player_pads[], unsigned changed) {
+    AcquireSRWLockExclusive(&lk);
+    for (int p = 0; p < VIB_PLAYERS; p++) {
+        if (!(changed & (1u << p))) continue;
+        for (int s = 0; s < 2; s++) {
+            if (!testing && players[p].pad) output(players[p].pad, s, silent);
+            remember(p, s, silent, 0);
+        }
+        players[p].pad = player_pads[p];
+    }
+    ReleaseSRWLockExclusive(&lk);
+}
+
+void rh_push(int player, int side, const float v[4]) {
+    if (!rh_ok) return;
     float al = v[0], ah = v[2];
     al = al > 0.0f ? (al < 1.0f ? al : 1.0f) : 0.0f;   /* (also a NaN: 0) */
     ah = ah > 0.0f ? (ah < 1.0f ? ah : 1.0f) : 0.0f;
     const float fl = v[1] > 0.0f ? v[1] : RH_FREQ_LOW, fh = v[3] > 0.0f ? v[3] : RH_FREQ_HIGH;
+    const float sample[4] = {al, fl, ah, fh};
     AcquireSRWLockExclusive(&lk);
-    at[side] = hos_now_ns(), quiet[side] = 0;
-    if (!testing) feed(side, al, fl, ah, fh);
+    if (!testing && players[player].pad) {
+        remember(player, side, sample, hos_now_ns());
+        output(players[player].pad, side, sample);
+    }
     ReleaseSRWLockExclusive(&lk);
 }
 
@@ -194,15 +223,21 @@ void rh_tick(int64_t now, int test, int percent, int hd) {
     const int was_percent = (int)InterlockedExchange(&gain_percent, percent);
     const int was_hd = (int)InterlockedExchange(&hd_on, hd != 0);
     AcquireSRWLockExclusive(&lk);
-    if (test) {   /* (the Test vibration row, or a strength just changed: both bands, half the game's top) */
-        testing = 1;
-        for (int s = 0; s < 2; s++) feed(s, RH_TEST_AMP, 180.0f, RH_TEST_AMP, RH_FREQ_HIGH), quiet[s] = 0, at[s] = now;
-    } else if (testing) {
-        testing = 0;
-        for (int s = 0; s < 2; s++) feed(s, 0.0f, RH_FREQ_LOW, 0.0f, RH_FREQ_HIGH), quiet[s] = 1, at[s] = 0;
+    if (test || testing) {
+        static const float test_value[4] = {RH_TEST_AMP, 180.0f, RH_TEST_AMP, RH_FREQ_HIGH};
+        const float *value = test ? test_value : silent;
+        for (int s = 0; s < 2; s++) {
+            output(NULL, s, value);
+            for (int p = 0; p < VIB_PLAYERS; p++) remember(p, s, value, 0);
+        }
+        testing = test;
     }
-    for (int s = 0; s < 2; s++)   /* (a side gone quiet: the game stopped sending, and the DSP would hold its value) */
-        if (at[s] && !quiet[s] && now - at[s] > RH_STALE_NS) feed(s, 0.0f, RH_FREQ_LOW, 0.0f, RH_FREQ_HIGH), quiet[s] = 1;
+    for (int p = 0; p < VIB_PLAYERS; p++)
+        for (int s = 0; s < 2; s++)
+            if (players[p].at[s] && now - players[p].at[s] > RH_STALE_NS) {
+                output(players[p].pad, s, silent);
+                remember(p, s, silent, 0);
+            }
     ReleaseSRWLockExclusive(&lk);
     if (percent != was_percent && (bt_dsp || sv_dsp)) recreate_bt_dsp(percent);
     if ((hd != 0) != was_hd) {
@@ -242,7 +277,7 @@ static void usb_hd_set(int on) {
     AcquireSRWLockExclusive(&lk);
     if (usb_dsp) rh.dualsense_dsp_set_speaker(usb_dsp, on ? RENHDRUM_HD_HAPTICS_SPEAKER_PERCENT : 0);
     tri_pair(usb_tri, on);
-    usb_seen[0] = fed[0], usb_seen[1] = fed[1];
+    usb_seen[0] = usb_seen[1] = feed_serial;
     ReleaseSRWLockExclusive(&lk);
     rh.hd_haptics_speaker_block(on, block);
     send_effects(pad, block);
@@ -261,13 +296,17 @@ void rh_ds_triggers(void *pad, int64_t now, int left_depth, int right_depth, int
     AcquireSRWLockExclusive(&lk);
     RenHdcTriTrigger **tri = usb ? usb_tri : bt_tri;
     uint32_t *seen = usb ? usb_seen : bt_seen;
+    int player = 0;
+    while (player < VIB_PLAYERS && players[player].pad != pad) player++;
     for (int s = 0; s < 2; s++) {
         if (!tri[s]) continue;
         if (other_held) rh.tri_trigger_note_action(tri[s], ms);   /* (another button held: a posture, or muted) */
-        const bool fresh = fed[s] != seen[s];
-        seen[s] = fed[s];
+        const uint32_t fed = player < VIB_PLAYERS ? players[player].fed[s] : 0;
+        const float *last = player < VIB_PLAYERS && fed ? players[player].last[s] : silent;
+        const bool fresh = (int32_t)(fed - seen[s]) > 0;
+        seen[s] = feed_serial;
         uint8_t effect[11];
-        if (rh.tri_trigger_update(tri[s], ms, (uint8_t)depth[s], last[s][0], last[s][1], last[s][2], last[s][3], fresh,
+        if (rh.tri_trigger_update(tri[s], ms, (uint8_t)depth[s], last[0], last[1], last[2], last[3], fresh,
                                   effect) != 1)
             continue;
         if (usb) {
@@ -338,7 +377,9 @@ int rh_usb_open(void *pad) {
             ReleaseSRWLockExclusive(&lk);
             usb_stream = hos_sdl_audio_open((unsigned)usb_token, 48000, 4, 0, usb_pull, NULL);
             if (usb_stream) {
+                AcquireSRWLockExclusive(&lk);
                 usb_pad = pad, ok = 1;
+                ReleaseSRWLockExclusive(&lk);
                 hos_log("vibration: the DualSense's voice coils on its cable (48 kHz, four channels)");
                 if (hd_on) usb_hd_set(1);
             } else {
@@ -357,11 +398,11 @@ int rh_usb_alive(void) { return usb_stream && hos_sdl_audio_alive(usb_stream); }
 static void usb_close_locked(void) {   /* (life held) */
     usb_hd_set(0);   /* (the speaker given back and the triggers released, while the pad is still open) */
     void *stream = usb_stream;
-    usb_stream = NULL, usb_pad = NULL;
+    usb_stream = NULL;
     if (stream) hos_sdl_audio_close(stream);   /* (waits for its callback, which takes lk: lk is not held here) */
     AcquireSRWLockExclusive(&lk);
     RenHdcDualSenseDsp *dsp = usb_dsp;
-    usb_dsp = NULL;
+    usb_dsp = NULL, usb_pad = NULL;
     ReleaseSRWLockExclusive(&lk);
     if (dsp) rh.dualsense_dsp_destroy(dsp);
 }
@@ -393,7 +434,7 @@ static DWORD WINAPI bt_main(LPVOID unused) {
         const int want = (int)hd_on;
         if (bt_dsp && (want != hd || bt_dsp != set_for)) {   /* (HD Haptics turned on or off, or a new DSP) */
             rh.dualsense_dsp_set_speaker(bt_dsp, want ? RENHDRUM_HD_HAPTICS_SPEAKER_PERCENT : 0);
-            if (want != hd) tri_pair(bt_tri, want), bt_seen[0] = fed[0], bt_seen[1] = fed[1], bt_state_off();
+            if (want != hd) tri_pair(bt_tri, want), bt_seen[0] = bt_seen[1] = feed_serial, bt_state_off();
             /* (going off: one last 0x36 with both triggers Off, then the plain 0x32) */
             if (!want && hd == 1) r = rh.dualsense_dsp_build_bt36_report(bt_dsp, bt_state, 0, report), size = RENHDRUM_DS5_BT36_REPORT_SIZE;
             hd = want, set_for = bt_dsp;
@@ -474,9 +515,9 @@ int rh_bt_open(void *pad, const char *hid_path) {
         RenHdcDualSenseDsp *dsp = hid ? rh.dualsense_dsp_create(p < 10 ? 10 : p > 100 ? 100 : p, false) : NULL;
         if (dsp) {
             AcquireSRWLockExclusive(&lk);
-            bt_dsp = dsp;
+            bt_dsp = dsp, bt_pad = pad;
             ReleaseSRWLockExclusive(&lk);
-            bt_hid = hid, bt_pad = pad;
+            bt_hid = hid;
             InterlockedExchange(&bt_run, 1), InterlockedExchange(&bt_failed, 0);
             bt_thread = CreateThread(NULL, 0, bt_main, NULL, 0, NULL);
             ok = bt_thread != NULL;
@@ -484,11 +525,11 @@ int rh_bt_open(void *pad, const char *hid_path) {
         if (!ok) {
             hos_log("vibration: the DualSense's HID device would not open for its Bluetooth haptics: its motors instead");
             AcquireSRWLockExclusive(&lk);
-            bt_dsp = NULL;
+            bt_dsp = NULL, bt_pad = NULL;
             ReleaseSRWLockExclusive(&lk);
             if (dsp) rh.dualsense_dsp_destroy(dsp);
             if (hid) hos_sdl_hid_close(hid);
-            bt_hid = NULL, bt_pad = NULL;
+            bt_hid = NULL;
         } else {
             hos_log("vibration: the DualSense's voice coils over Bluetooth (report %s)", hd_on ? "0x36, HD Haptics" : "0x32");
         }
@@ -503,10 +544,10 @@ static void bt_close_locked(void) {   /* (life held) */
     InterlockedExchange(&bt_run, 0);
     if (thread) WaitForSingleObject(thread, 2000), CloseHandle(thread);   /* (it takes lk only, never life) */
     if (bt_hid) hos_sdl_hid_close(bt_hid);
-    bt_hid = NULL, bt_pad = NULL;
+    bt_hid = NULL;
     AcquireSRWLockExclusive(&lk);
     RenHdcDualSenseDsp *dsp = bt_dsp;
-    bt_dsp = NULL;
+    bt_dsp = NULL, bt_pad = NULL;
     ReleaseSRWLockExclusive(&lk);
     if (dsp) rh.dualsense_dsp_destroy(dsp);
 }
@@ -599,9 +640,9 @@ int rh_steam_open(void *pad, const char *hid_path, int cable) {
         RenHdcDualSenseDsp *dsp = hid ? rh.valve_grip_dsp_create_ex(p < 10 ? 10 : p > 100 ? 100 : p, true, true) : NULL;
         if (dsp) {
             AcquireSRWLockExclusive(&lk);
-            sv_dsp = dsp;
+            sv_dsp = dsp, sv_pad = pad;
             ReleaseSRWLockExclusive(&lk);
-            sv_hid = hid, sv_pad = pad;
+            sv_hid = hid;
             sv_format = cable ? RENHDRUM_VALVE_GRIP_FORMAT_MULAW_8K : RENHDRUM_VALVE_GRIP_FORMAT_MULAW_4K;
             InterlockedExchange(&sv_run, 1), InterlockedExchange(&sv_failed, 0);
             sv_thread = CreateThread(NULL, 0, sv_main, NULL, 0, NULL);
@@ -610,11 +651,11 @@ int rh_steam_open(void *pad, const char *hid_path, int cable) {
         if (!ok) {
             hos_log("vibration: the Steam Controller's HID device would not open for its grips: its motors instead");
             AcquireSRWLockExclusive(&lk);
-            sv_dsp = NULL;
+            sv_dsp = NULL, sv_pad = NULL;
             ReleaseSRWLockExclusive(&lk);
             if (dsp) rh.dualsense_dsp_destroy(dsp);
             if (hid) hos_sdl_hid_close(hid);
-            sv_hid = NULL, sv_pad = NULL;
+            sv_hid = NULL;
         } else {
             hos_log("vibration: the Steam Controller's grips (report 0x88, %s; RenHDrum's experimental)",
                     cable ? "8 kHz on its cable" : "4 kHz without one");
@@ -630,10 +671,10 @@ static void sv_close_locked(void) {   /* (life held) */
     InterlockedExchange(&sv_run, 0);
     if (thread) WaitForSingleObject(thread, 2000), CloseHandle(thread);   /* (it takes lk only, never life) */
     if (sv_hid) hos_sdl_hid_close(sv_hid);
-    sv_hid = NULL, sv_pad = NULL;
+    sv_hid = NULL;
     AcquireSRWLockExclusive(&lk);
     RenHdcDualSenseDsp *dsp = sv_dsp;
-    sv_dsp = NULL;
+    sv_dsp = NULL, sv_pad = NULL;
     ReleaseSRWLockExclusive(&lk);
     if (dsp) rh.dualsense_dsp_destroy(dsp);
 }

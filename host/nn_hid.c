@@ -27,6 +27,8 @@
    Npad states share one layout (NpadCommonState): { s64 sampling; u64 buttons; s32 lx, ly; s32 rx, ry; u32 attributes;
    pad } = 0x28 bytes. */
 #include "hos.h"
+#include "hos_sdl.h"
+#include "vibration.h"
 #include "hos_paths.h"
 #include "options_path.h"
 #include "control.h"
@@ -1731,7 +1733,7 @@ HLE(_ZN2nn3hid21ShowControllerSupportEPNS0_27ControllerSupportResultInfoERKNS0_2
 }
 
 /* Handles: six-axis ones are opaque u32s; a vibration handle is {u8 style type (3 = full key), u8 npad id, u8 device
-   index (0 left, 1 right), u8 reserved}, which the SDK's vibration classes read. Vibration goes nowhere yet. */
+   index (0 left, 1 right), u8 reserved}, which the SDK's vibration classes read. */
 HLE(_ZN2nn3hid23GetSixAxisSensorHandlesEPNS0_19SixAxisSensorHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE) {
     /* (longshot) OoT asks for two (a Joy-Con pair) but runs its motion path only when three come back: at two its
        third source (the console's own, through JCMS) stays dead, and that branch is what marks motion active for the
@@ -1816,7 +1818,7 @@ HLE(_ZN2nn3hid18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14Vibrati
    Xbox pad's motor, nothing you feel. Eden's SDL driver's mapping (Eglantine src/input_common/drivers/sdl_driver.cpp, GPL-3.0):
    (a + a^0.35) / 2, then less for higher frequencies, to give some feel of them */
 static float rumble_motor(float amp, float freq, float start, float width) {
-    if (amp <= 0.0f) return 0.0f;
+    if (!(amp > 0.0f)) return 0.0f;
     float scale = 1.0f;
     if (freq > start) {
         scale = 1.0f - (freq - start) / width;
@@ -1851,11 +1853,14 @@ static void rumble_map(const float v[4], float motor[2]) {
     motor[1] = light[0] > light[1] ? light[0] : light[1];
 }
 static void vibration_send(uint64_t handle, uint64_t value) {
-    static float amp[2][2];
-    float v[4];
+    if (!hos_guest_range(handle, 4) || !hos_guest_range(value, 16)) return;
+    const uint32_t h = G32(handle);
+    const int player = (h >> 8) & 0xff;
+    const int dev = (h >> 16) & 0xff;
+    if (player >= VIB_PLAYERS || dev > 1) return;
+    float v[4], motors[2];
     memcpy(v, GP(value), sizeof v);
-    const int dev = (G32(handle) >> 16) & 1;
-    rumble_map(v, amp[dev]);
+    rumble_map(v, motors);
     {   /* (longshot) what the game asks for: the first values, then a count now and then */
         static long long n, strong;
         static float peak;
@@ -1865,14 +1870,7 @@ static void vibration_send(uint64_t handle, uint64_t value) {
             hos_log("hid: vibration #%lld: handle %08x, low %.2f @ %.0f Hz, high %.2f @ %.0f Hz", n, G32(handle), v[0], v[1], v[2], v[3]);
         if ((++n & 4095) == 0) hos_log("hid: %lld vibration values, strongest %.2f since the last count", n, peak), peak = 0;
     }
-    void hos_sdl_rumble_hd(int side, const float value[4]);   /* pad_sdl.c: the value as it is, for HD rumble */
-    hos_sdl_rumble_hd(dev, v);
-    /* (longshot) the same four values, as they are, to RenHDrum's backends (host/rumble_renhdrum.c): they keep the
-       bands apart, which rumble_map above has just flattened for the motors */
-    void rh_push(int side, const float value[4]);
-    rh_push(dev, v);
-    void hos_sdl_rumble(float low, float high);   /* pad_sdl.c */
-    hos_sdl_rumble(amp[0][0] > amp[1][0] ? amp[0][0] : amp[1][0], amp[0][1] > amp[1][1] ? amp[0][1] : amp[1][1]);
+    hos_sdl_rumble(player, dev, v, motors);
 }
 static void vibration_value_idle(uint64_t v) {   /* VibrationValue {f32 amp_low, freq_low, amp_high, freq_high} */
     float idle[4] = {0.0f, 160.0f, 0.0f, 320.0f};

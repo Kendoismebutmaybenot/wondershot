@@ -16,7 +16,8 @@
 int rh_load(void);                 /* 1 when RenHDrum is loaded (tried once) */
 const char *rh_why(void);          /* why it is not, when it is not */
 
-void rh_push(int side, const float value[4]);    /* (the game's thread) {amp_low, freq_low, amp_high, freq_high} */
+void rh_push(int player, int side, const float value[4]);    /* game thread */
+void rh_route_players(void *const player_pads[], unsigned changed);    /* pad thread */
 /* each poll: a test's values, a hand gone quiet, the strength, a DualSense's HD Haptics (1 on: the Controls page's) */
 void rh_tick(int64_t now, int testing, int percent, int hd_haptics);
 /* each poll, for the DualSense whose voice coils play (cable or Bluetooth): its triggers' pull (0 to 255) and whether

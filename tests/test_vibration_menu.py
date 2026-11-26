@@ -257,7 +257,8 @@ def host():
     check("vib_leave(i, now);" in definition(pads, "static void pads_poll"),
           "a pad that goes away is not let go by what played it")
     hid = read("host", "nn_hid.c")
-    check("rh_push(dev, v);" in definition(hid, "static void vibration_send"),
+    check("hos_sdl_rumble(player, dev, v, motors);" in definition(hid, "static void vibration_send")
+          and "rh_push(player, side, value);" in definition(pads, "void hos_sdl_rumble"),
           "the game's own vibration values no longer reach RenHDrum")
     check("hos_sdl_vibration_shutdown();" in read("host", "hos_main.c"), "the game's end no longer lets RenHDrum go")
 

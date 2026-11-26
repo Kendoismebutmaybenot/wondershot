@@ -335,7 +335,7 @@ def build_and_run(test, source, extra=()):
         path = os.path.join(d, "hd.c")
         with open(path, "w", encoding="utf-8") as f:
             f.write(source)
-        exe = os.path.join(d, "hd")
+        exe = os.path.join(d, "hd.exe" if os.name == "nt" else "hd")
         cc = os.environ.get("CC", "cc")
         made = subprocess.run([cc, "-std=c11", "-Wall", "-Wextra", "-Werror", *extra, "-I", str(ROOT / "host"), path,
                                "-o", exe, "-lm"], capture_output=True, text=True)
@@ -356,6 +356,67 @@ class HdRumbleTests(unittest.TestCase):
                          "poll": function(PAD, "static int hd_poll")}
         build_and_run(self, source, ["-Wno-unused-function", "-D_POSIX_C_SOURCE=200809L"])
 
+    def test_gameplay_samples_stay_with_their_player(self):
+        pad = PAD.read_text(encoding="utf-8")
+        state = pad[pad.rindex("typedef struct {", 0, pad.index("} PadRumble;")):pad.index("static PadRumble rumble[")]
+        source = r"""
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <math.h>
+#include "vibration.h"
+#define CHECK(expr) do { if (!(expr)) { fprintf(stderr, "%d: %s\n", __LINE__, #expr); return 1; } } while (0)
+#define SRWLOCK int
+#define SRWLOCK_INIT 0
+#define AcquireSRWLockExclusive(lock) (void)(lock)
+#define ReleaseSRWLockExclusive(lock) (void)(lock)
+static void hos_log(const char *fmt, ...) { (void)fmt; }
+#define G32(addr) (*(const uint32_t *)(uintptr_t)(addr))
+#define GP(addr) ((const void *)(uintptr_t)(addr))
+#define hos_guest_range(addr, size) ((addr) != 0 && (size) > 0)
+#define RUMBLE_HEAVY_TOP 160.0f
+#define RUMBLE_LIGHT_BOTTOM 200.0f
+"""
+        source += state + "static PadRumble rumble[VIB_PLAYERS];\n"
+        source += """
+static float rh_value[VIB_PLAYERS][2];
+static void rh_push(int player, int side, const float value[4]) { rh_value[player][side] = value[0]; }
+"""
+        source += "\n".join(function(path, name) for path, name in (
+            (PAD, "static void rumble_strength"), (PAD, "static void rumble_motors"), (PAD, "void hos_sdl_rumble"),
+            (HID, "static float rumble_motor"), (HID, "static float rumble_heavy_share"),
+            (HID, "static void rumble_map"), (HID, "static void vibration_send"),
+        ))
+        source += r"""
+
+int main(void) {
+    const uint32_t p1_left = 0x00000003, p2_left = 0x00000103, p2_right = 0x00010103;
+    const float p1[4] = {0.3f, 150.0f, 0.0f, 320.0f}, p2[4] = {0.7f, 150.0f, 0.0f, 320.0f};
+    const float stop[4] = {0.0f, 160.0f, 0.0f, 320.0f};
+    uint16_t p1_motors[2], p2_motors[2];
+    vibration_send((uintptr_t)&p2_left, (uintptr_t)p2);
+    rumble_motors(&rumble[0], 0, 100, p1_motors);
+    rumble_motors(&rumble[1], 0, 100, p2_motors);
+    CHECK(p1_motors[0] == 0 && p2_motors[0] > 0);
+    vibration_send((uintptr_t)&p1_left, (uintptr_t)p1);
+    vibration_send((uintptr_t)&p2_right, (uintptr_t)p2);
+    vibration_send((uintptr_t)&p2_left, (uintptr_t)stop);
+    rumble_motors(&rumble[0], 0, 100, p1_motors);
+    rumble_motors(&rumble[1], 0, 100, p2_motors);
+    CHECK(p2_motors[0] > p1_motors[0] && p1_motors[0] > 0);
+    vibration_send((uintptr_t)&p2_right, (uintptr_t)stop);
+    rumble_motors(&rumble[1], 0, 100, p2_motors);
+    CHECK(p2_motors[0] == 0);
+    CHECK(rumble[0].hd[0][0] == 0.3f && rh_value[0][0] == 0.3f);
+    CHECK(rumble[1].hd[1][0] == 0.0f && rh_value[1][1] == 0.0f);
+    rumble_motors(&rumble[0], 1, 100, p1_motors);
+    rumble_motors(&rumble[1], 1, 100, p2_motors);
+    CHECK(p1_motors[0] > 0 && p1_motors[0] == p2_motors[0]);
+    return 0;
+}
+"""
+        build_and_run(self, source)
+
     def test_wired_in(self):
         poll = function(PAD, "static void pads_poll")
         self.assertIn("hd_open(slot, gc)", poll)
@@ -367,9 +428,11 @@ class HdRumbleTests(unittest.TestCase):
         self.assertIn("hd_rumble_merge(felt[0], felt[1], felt[2])", poll)   # (a single Joy-Con: both sides merged)
         self.assertIn("hd_rumble_encode(felt[2], strength, side[2])", poll)
         # (a Switch pad host/vibration.h gives our HD rumble plays it, and gets the motors only once SDL refuses it)
-        self.assertLess(poll.index("if (pads[i].vib == VIB_HD && hd_poll(i, side, now)) continue;"), poll.index("rumble_due("))
+        self.assertIn("const PadRumble *sample = &samples[player >= 0 ? player : VIB_PLAYERS];", poll)
+        self.assertIn("memcpy(hv, sample->hd, sizeof hv);", poll)
+        self.assertLess(poll.index("if (hd_poll(i, side, now)) continue;"), poll.index("rumble_due("))
         self.assertIn('getenv("HOS_HD_RUMBLE")', function(PAD, "static void hd_open"))
-        self.assertIn("hos_sdl_rumble_hd(dev, v);", function(HID, "static void vibration_send"))
+        self.assertIn("hos_sdl_rumble(player, dev, v, motors);", function(HID, "static void vibration_send"))
 
 
 if __name__ == "__main__":

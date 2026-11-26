@@ -15,6 +15,8 @@
    no sound card or HID device): a DualSense's motors, a Switch pad's own HD rumble, the others' motors.
    HOS_RUMBLE_BACKEND=hd keeps RenHDrum out, =motors plays the motors everywhere. */
 #pragma once
+
+enum { VIB_PLAYERS = 4 };
 #include <stdlib.h>
 #include <string.h>
 

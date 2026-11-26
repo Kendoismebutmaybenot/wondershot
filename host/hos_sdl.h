@@ -98,6 +98,7 @@ const char *hos_sdl_pad_name(void *pad);
 void hos_sdl_pad_log_connection(void *pad, int motion, int steam);
 int32_t hos_sdl_pad_id(void *pad);
 void hos_sdl_pad_rumble(void *pad, uint16_t low, uint16_t high, uint32_t ms);
+void hos_sdl_rumble(int player, int side, const float value[4], const float motors[2]);
 /* (HD rumble, host/pad_sdl.c) the pad's SDL_GetGamepadType / SDL_GameControllerGetType, in the loaded SDL's numbers (0
    unknown, or no such call); whether the SDL has the effect call; a raw effect sent (SDL_SendGamepadEffect /
    SDL_GameControllerSendEffect): 1 when SDL took it */

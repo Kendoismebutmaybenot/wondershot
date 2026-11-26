@@ -80,15 +80,18 @@ static int state_pl_on[4];
 static int state_deck_builtin;   /* (longshot) the Deck's built-in controls gave gameplay input in that poll */
 static char state_name[128];   /* the first controller's name (host/prompts.c: the button prompts' Auto) */
 static int state_type, state_sdl;   /* and its SDL type (the loaded SDL's numbers, 0 unknown), and that SDL (3, 2; 0 none) */
-static volatile LONG rumble_low, rumble_high;   /* 0..65535, set by the vibration HLE */
 /* (the Insert menu's Rumble strength row, changed: a short rumble at the new strength, so the player feels what the row
    does, and that the controller rumbles at all) until when, hos_now_ns */
 static int64_t rumble_test_until;
 void hos_sdl_rumble_test(void) { __atomic_store_n(&rumble_test_until, hos_now_ns() + 400000000LL, __ATOMIC_RELAXED); }
-/* the game's own vibration values per side (0 left, 1 right: {amp_low, freq_low, amp_high, freq_high}), for the pads
-   that play HD rumble; silence until the game sends one */
-static SRWLOCK hd_lock = SRWLOCK_INIT;
-static float hd_values[2][4] = {{0.0f, 160.0f, 0.0f, 320.0f}, {0.0f, 160.0f, 0.0f, 320.0f}};
+/* The game's vibration values per player and side, for SDL motors and HD rumble. */
+typedef struct {
+    float hd[2][4];
+    uint16_t motors[2][2];
+} PadRumble;
+static SRWLOCK rumble_lock = SRWLOCK_INIT;
+static PadRumble rumble[VIB_PLAYERS];
+
 /* (motion) the pad read and its filter (the polling thread's own), then what the game is handed (under state_lock): the
    last HOS_MOTION_HISTORY readings, newest at motion_hist[motion_head]; gyro_status for the menu */
 /* (Wondershot) one of these for each player: the pad that is player p's gives player p's sensors, as the game asks for them by its
@@ -168,6 +171,13 @@ static void rumble_strength(unsigned heavy, unsigned light, int percent, uint16_
     }
     out[0] = (uint16_t)h;
     out[1] = (uint16_t)l;
+}
+
+static void rumble_motors(const PadRumble *sample, int testing, int strength, uint16_t motors[2]) {
+    uint16_t merged[2];
+    for (int m = 0; m < 2; m++)
+        merged[m] = sample->motors[0][m] > sample->motors[1][m] ? sample->motors[0][m] : sample->motors[1][m];
+    rumble_strength(testing ? 0xC000 : merged[0], testing ? 0xC000 : merged[1], strength, motors);
 }
 
 /* A pad SDL just opened: HD rumble when it is a Switch Pro Controller or a Joy-Con and the SDL has the effect call
@@ -617,6 +627,29 @@ static void pads_poll(void) {
             }
         }
         assign_players();
+        void *player_pads[VIB_PLAYERS] = {0};
+        uint32_t serial[VIB_PLAYERS] = {0};
+        static uint32_t rumble_serial[VIB_PLAYERS];
+        for (int i = 0; i < MAX_PADS; i++) {
+            const int player = pads[i].player;
+            if (pads[i].gc && player >= 0) {
+                player_pads[player] = pads[i].gc;
+                serial[player] = pads[i].serial;
+            }
+        }
+        PadRumble samples[VIB_PLAYERS + 1] = {0};   /* extra entry for an unassigned pad */
+        unsigned changed = 0;
+        AcquireSRWLockExclusive(&rumble_lock);
+        for (int p = 0; p < VIB_PLAYERS; p++) {
+            if (serial[p] != rumble_serial[p]) {
+                changed |= 1u << p;
+                rumble_serial[p] = serial[p];
+                memset(&rumble[p], 0, sizeof rumble[p]);
+            }
+            samples[p] = rumble[p];
+        }
+        if (changed) rh_route_players(player_pads, changed);
+        ReleaseSRWLockExclusive(&rumble_lock);
         uint64_t b = 0;
         int32_t s[4] = {0};
         int count = 0;
@@ -627,27 +660,10 @@ static void pads_poll(void) {
         int mode = rx_option(HOS_OPT_VIBRATION, VIB_MODE_AUTO);
         if (mode < VIB_MODE_AUTO || mode > VIB_MODE_OFF) mode = VIB_MODE_AUTO;
         if (strength <= 0) mode = VIB_MODE_OFF, strength = 100;
-        uint16_t motors[2];
         /* (Test vibration, or a strength just changed: three quarters of the motors, as the game's is scaled) */
         const int testing = now < __atomic_load_n(&rumble_test_until, __ATOMIC_RELAXED);
         /* (RenHDrum's backends: the test, a side gone quiet, the strength, and the Controls page's DualSense HD Haptics) */
         rh_tick(now, testing, strength, rx_option(HOS_OPT_DS_HD_HAPTICS, 1) != 0);
-        rumble_strength(testing ? 0xC000 : (uint16_t)rumble_low, testing ? 0xC000 : (uint16_t)rumble_high, strength, motors);
-        const uint16_t lo = motors[0], hi = motors[1];
-        uint8_t side[3][4];   /* (the HD rumble pads': each side's bytes, then both merged for a single Joy-Con) */
-        {
-            float hv[2][4], felt[3][4];
-            AcquireSRWLockShared(&hd_lock);
-            memcpy(hv, hd_values, sizeof hv);
-            ReleaseSRWLockShared(&hd_lock);
-            if (testing) hv[0][0] = hv[0][2] = hv[1][0] = hv[1][2] = 0.5f;   /* (HD rumble pads: both bands, at their frequencies) */
-            hd_rumble_felt(hv[0], felt[0]);   /* (the game's small amplitudes, as the motors get them) */
-            hd_rumble_felt(hv[1], felt[1]);
-            hd_rumble_encode(felt[0], strength, side[0]);
-            hd_rumble_encode(felt[1], strength, side[1]);
-            hd_rumble_merge(felt[0], felt[1], felt[2]);
-            hd_rumble_encode(felt[2], strength, side[2]);
-        }
         int stand_in = 0;   /* (longshot) a Steam stand-in pad open (host/steam_pads.h) */
         int64_t status_used = -1;   /* (longshot) the Controls page's vibration line: the pad used last */
         int status_pad = -1;
@@ -742,7 +758,27 @@ static void pads_poll(void) {
             vib_choose(i, mode, now);
             if (pads[i].used_ns >= status_used) status_used = pads[i].used_ns, status_pad = i;
             if (pads[i].vib == VIB_NONE) continue;
-            if (pads[i].vib == VIB_HD && hd_poll(i, side, now)) continue;   /* (refused: its motors, and chosen again) */
+            const int player = pads[i].player;
+            const PadRumble *sample = &samples[player >= 0 ? player : VIB_PLAYERS];
+            if (pads[i].vib == VIB_HD) {
+                uint8_t side[3][4];
+                float hv[2][4], felt[3][4];
+                memcpy(hv, sample->hd, sizeof hv);
+                if (testing) {
+                    for (int s = 0; s < 2; s++) {
+                        hv[s][0] = hv[s][2] = 0.5f;
+                        if (hv[s][1] <= 0.0f) hv[s][1] = 160.0f;
+                        if (hv[s][3] <= 0.0f) hv[s][3] = 320.0f;
+                    }
+                }
+                hd_rumble_felt(hv[0], felt[0]);
+                hd_rumble_felt(hv[1], felt[1]);
+                hd_rumble_encode(felt[0], strength, side[0]);
+                hd_rumble_encode(felt[1], strength, side[1]);
+                hd_rumble_merge(felt[0], felt[1], felt[2]);   /* a single Joy-Con */
+                hd_rumble_encode(felt[2], strength, side[2]);
+                if (hd_poll(i, side, now)) continue;   /* (refused: its motors, and chosen again) */
+            }
             if (pads[i].vib == VIB_RH_DS_USB || pads[i].vib == VIB_RH_DS_BT) {   /* (their own threads play) */
                 /* (HD Haptics' triggers: how far each is pulled, 0 to 255, and whether another button is held) */
                 const int lt = hos_sdl_pad_axis(gc, AX_LT), rt = hos_sdl_pad_axis(gc, AX_RT);
@@ -760,6 +796,9 @@ static void pads_poll(void) {
                 if (rh_switch_poll(gc, now, packet)) hos_sdl_pad_effect(gc, packet, sizeof packet);
                 continue;
             }
+            uint16_t motors[2];
+            rumble_motors(sample, testing, strength, motors);
+            const uint16_t lo = motors[0], hi = motors[1];
             if (rumble_due(lo, hi, pads[i].rumble_lo, pads[i].rumble_hi, now, pads[i].rumble_ns)) {
                 hos_sdl_pad_rumble(gc, lo, hi, lo || hi ? 1000 : 0);
                 pads[i].rumble_lo = lo;
@@ -903,22 +942,15 @@ void hos_sdl_pad_first(char *out, size_t cap, int *type, int *sdl) {
     ReleaseSRWLockShared(&state_lock);
 }
 
-/* Vibration from the game (0..1 amplitudes of the low and high bands), for the pads that rumble. */
-void hos_sdl_rumble(float low, float high) {
-    if (low < 0) low = 0;
-    if (low > 1) low = 1;
-    if (high < 0) high = 0;
-    if (high > 1) high = 1;
-    InterlockedExchange(&rumble_low, (LONG)(low * 65535));
-    InterlockedExchange(&rumble_high, (LONG)(high * 65535));
-}
-
-/* The game's own vibration value for one side (0 left, 1 right; {amp_low, freq_low, amp_high, freq_high}), for the
-   pads that play HD rumble (hd_rumble.h); nn_hid.c's vibration_send, beside hos_sdl_rumble. */
-void hos_sdl_rumble_hd(int side, const float value[4]) {
-    AcquireSRWLockExclusive(&hd_lock);
-    memcpy(hd_values[side & 1], value, sizeof hd_values[0]);
-    ReleaseSRWLockExclusive(&hd_lock);
+/* Both forms of one actuator's sample, published together by the game's vibration thread. */
+void hos_sdl_rumble(int player, int side, const float value[4], const float motors[2]) {
+    AcquireSRWLockExclusive(&rumble_lock);
+    PadRumble *sample = &rumble[player];
+    memcpy(sample->hd[side], value, sizeof sample->hd[side]);
+    for (int m = 0; m < 2; m++)
+        sample->motors[side][m] = (uint16_t)(motors[m] * 65535.0f);
+    rh_push(player, side, value);
+    ReleaseSRWLockExclusive(&rumble_lock);
 }
 
 /* (longshot) the game is over: RenHDrum's backends stop and let go of the pads (host/rumble_renhdrum.c); hos_main.c calls
