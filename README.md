@@ -20,7 +20,7 @@
 >
 > Gameplay uses encrypted WebRTC data channels, through Cloudflare TURN in Private relay mode or directly when available in Direct preferred mode. Cloudflare handles room discovery and connection setup. Permanent service credentials stay on the server. Clients receive temporary session and TURN credentials automatically.
 >
-> Initial public service capacity is limited. If admission is rate-limited, wait before retrying; do not repeatedly recreate rooms. The service has daily room and credential ceilings and six-hour sessions. After an unexpected exit, stale membership can take about a minute to clear. Recreate the room after session expiry or a prolonged network failure. There is no automatic game-state recovery after a connection is lost.
+> If a connection drops, try joining again or create a new room.
 >
 > TURN and direct gameplay have been tested using two instances on one PC, including different frame-rate caps. Native transport tests cover admission rejection and a replacement guest joining the same host room. The game’s numeric password entry, rejection of a wrong PIN, successful entry with the correct PIN, and concurrent rooms were also confirmed in the actual game. Gameplay across separate internet connections and different router/NAT combinations still needs broader testing. Each room currently supports one host and one guest. Local multiplayer support does not mean four networked PCs are supported.
 >
