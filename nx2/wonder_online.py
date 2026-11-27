@@ -71,6 +71,49 @@ def cmake_source_args(build, source):
     return [] if same else ['--fresh']
 
 
+class OnlineBuildError(Exception):
+    pass
+
+
+_DIRTY_MANIFEST = "ninja: error: manifest 'build.ninja' still dirty after "
+
+
+def _cmake_run(command, environment):
+    # Keep progress in the Builder log and retain the actual error for the popup.
+    error = last_line = ''
+    with subprocess.Popen(command, env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          encoding='utf-8', errors='replace') as process:
+        for line in process.stdout:
+            print(line, end='', flush=True)
+            line = line.strip()
+            if line:
+                last_line = line
+            if line.startswith(_DIRTY_MANIFEST):
+                error = line
+            elif not error.startswith(_DIRTY_MANIFEST) and ('error:' in line.lower() or line.startswith('CMake Error')):
+                error = line
+        status = process.wait()
+    return status, error or last_line or f'exit code {status}'
+
+
+def _build_runtime(configure, compile_runtime, source_args, environment):
+    status, reason = _cmake_run(configure[:1] + source_args + configure[1:], environment)
+    if status:
+        raise OnlineBuildError(f'Could not configure the online runtime: {reason}')
+    status, reason = _cmake_run(compile_runtime, environment)
+    if status and reason.startswith(_DIRTY_MANIFEST):
+        print('The online build files stayed out of date. Refreshing the online build and retrying once.', flush=True)
+        # The Builder configures CMake explicitly every time. Suppress Ninja's
+        # redundant regeneration so a stale or future input timestamp cannot loop.
+        status, reason = _cmake_run(
+            configure[:1] + ['--fresh', '-DCMAKE_SUPPRESS_REGENERATION=ON'] + configure[1:], environment)
+        if status:
+            raise OnlineBuildError(f'Could not refresh the online build files: {reason}')
+        status, reason = _cmake_run(compile_runtime, environment)
+    if status:
+        raise OnlineBuildError(f'Could not build the online runtime: {reason}')
+
+
 def libraries(out, compiler, jobs):
     """Called by the ordinary Builder. No game data, Git, Perl or pip is required."""
     out = Path(out).resolve()
@@ -99,10 +142,11 @@ def libraries(out, compiler, jobs):
     environment = dict(os.environ)
     environment['PATH'] = str(compiler.parent) + os.pathsep + environment.get('PATH', '')
     print('Building the native online runtime (incremental)', flush=True)
-    subprocess.run([str(cmake), *cmake_source_args(build, source), '-S', str(source), '-B', str(build), '-G', 'Ninja',
-                    '-DCMAKE_TOOLCHAIN_FILE=' + str(toolchain), '-DCMAKE_MAKE_PROGRAM=' + str(ninja),
-                    '-DCMAKE_BUILD_TYPE=Release', '-DWONDER_DEPS=' + dependencies.as_posix()], env=environment, check=True)
-    subprocess.run([str(cmake), '--build', str(build), '--target', 'wonder_online', '-j', str(max(1, min(jobs, 4)))], env=environment, check=True)
+    configure = [str(cmake), '-S', str(source), '-B', str(build), '-G', 'Ninja',
+                 '-DCMAKE_TOOLCHAIN_FILE=' + str(toolchain), '-DCMAKE_MAKE_PROGRAM=' + str(ninja),
+                 '-DCMAKE_BUILD_TYPE=Release', '-DWONDER_DEPS=' + dependencies.as_posix()]
+    compile_runtime = [str(cmake), '--build', str(build), '--target', 'wonder_online', '-j', str(max(1, min(jobs, 4)))]
+    _build_runtime(configure, compile_runtime, cmake_source_args(build, source), environment)
     names = ('libwonder_online.a', 'datachannel/libdatachannel-static.a',
              'datachannel/deps/usrsctp/usrsctplib/libusrsctp.a', 'mbedtls/library/libmbedtls.a',
              'mbedtls/library/libmbedx509.a', 'mbedtls/library/libmbedcrypto.a',

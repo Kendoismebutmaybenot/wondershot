@@ -78,9 +78,12 @@ def run(cmd, env=None, on_line=None, cwd=ROOT):
     p = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
                          errors="replace", creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     tail = []
+    reason = ''
     for line in p.stdout:
         line = line.rstrip("\r\n")
         if line.startswith("@@"):
+            if line.startswith("@@error "):
+                reason = line[len("@@error "):].strip() or reason
             if on_line:
                 on_line(line)
             continue
@@ -89,6 +92,8 @@ def run(cmd, env=None, on_line=None, cwd=ROOT):
         if on_line:
             on_line(line)
     if p.wait() != 0:
+        if reason:
+            fail(reason)
         fail("%s stopped (exit code %d). The last lines:\n%s" % (os.path.basename(next((c for c in cmd if c.endswith(".py")), cmd[0])),
                                                                  p.returncode, "\n".join(tail)))
 

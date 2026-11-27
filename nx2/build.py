@@ -2268,7 +2268,11 @@ def main():
     online_libs = []
     if a.standalone and not vk_only and not LINUX:
         import wonder_online
-        online_libs = wonder_online.libraries(out, cc, a.jobs)
+        try:
+            online_libs = wonder_online.libraries(out, cc, a.jobs)
+        except wonder_online.OnlineBuildError as error:
+            print(f"@@error {error}", flush=True)
+            return 1
         objs = wonder_online.redirect_socket(objs, cc, out)
     rsp = os.path.join(out, "objs.rsp")
     open(rsp, "w", encoding="utf-8").write("\n".join('"%s"' % o.replace("\\", "/") for o in objs))

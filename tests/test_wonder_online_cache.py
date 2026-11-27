@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('wonder_online', Path(__file__).resolve().parents[1] / 'nx2/wonder_online.py')
 online = importlib.util.module_from_spec(spec)
@@ -12,6 +13,23 @@ spec.loader.exec_module(online)
 
 
 class CacheTests(unittest.TestCase):
+    def test_dirty_manifest_retries_only_once(self):
+        dirty = (1, online._DIRTY_MANIFEST + '100 tries, perhaps system time is not set')
+        with patch.object(online, '_cmake_run', side_effect=[(0, ''), dirty, (0, ''), dirty]) as run:
+            with self.assertRaisesRegex(online.OnlineBuildError, 'still dirty after 100 tries'):
+                online._build_runtime(['cmake', '-S', 'source'], ['cmake', '--build', 'online'], [], {})
+        self.assertEqual([call.args[0] for call in run.call_args_list], [
+            ['cmake', '-S', 'source'], ['cmake', '--build', 'online'],
+            ['cmake', '--fresh', '-DCMAKE_SUPPRESS_REGENERATION=ON', '-S', 'source'],
+            ['cmake', '--build', 'online'],
+        ])
+
+    def test_other_build_errors_are_preserved_without_retry(self):
+        with patch.object(online, '_cmake_run', side_effect=[(0, ''), (1, 'error: compiler failed')]) as run:
+            with self.assertRaisesRegex(online.OnlineBuildError, 'error: compiler failed'):
+                online._build_runtime(['cmake', '-S', 'source'], ['cmake', '--build', 'online'], [], {})
+        self.assertEqual(run.call_count, 2)
+
     def test_source_location(self):
         with tempfile.TemporaryDirectory() as directory:
             build = Path(directory)
