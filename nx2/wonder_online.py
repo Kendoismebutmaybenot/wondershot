@@ -59,6 +59,18 @@ def tool(cache, spec):
     return folder / executable
 
 
+def cmake_source_args(build, source):
+    """CMake records an absolute source root; a moved Builder must reconfigure it."""
+    cache = Path(build) / 'CMakeCache.txt'
+    if not cache.is_file():
+        return []
+    prefix = 'CMAKE_HOME_DIRECTORY:INTERNAL='
+    previous = next((line[len(prefix):] for line in cache.read_text(encoding='utf-8', errors='replace').splitlines()
+                     if line.startswith(prefix)), '')
+    same = previous and os.path.normcase(os.path.realpath(previous)) == os.path.normcase(os.path.realpath(source))
+    return [] if same else ['--fresh']
+
+
 def libraries(out, compiler, jobs):
     """Called by the ordinary Builder. No game data, Git, Perl or pip is required."""
     out = Path(out).resolve()
@@ -87,7 +99,7 @@ def libraries(out, compiler, jobs):
     environment = dict(os.environ)
     environment['PATH'] = str(compiler.parent) + os.pathsep + environment.get('PATH', '')
     print('Building the native online runtime (incremental)', flush=True)
-    subprocess.run([str(cmake), '-S', str(source), '-B', str(build), '-G', 'Ninja',
+    subprocess.run([str(cmake), *cmake_source_args(build, source), '-S', str(source), '-B', str(build), '-G', 'Ninja',
                     '-DCMAKE_TOOLCHAIN_FILE=' + str(toolchain), '-DCMAKE_MAKE_PROGRAM=' + str(ninja),
                     '-DCMAKE_BUILD_TYPE=Release', '-DWONDER_DEPS=' + dependencies.as_posix()], env=environment, check=True)
     subprocess.run([str(cmake), '--build', str(build), '--target', 'wonder_online', '-j', str(max(1, min(jobs, 4)))], env=environment, check=True)
