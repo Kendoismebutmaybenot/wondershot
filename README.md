@@ -10,21 +10,21 @@
 
 <a name="online-play"></a>
 
-> **Online play.** Online play is experimental and uses Bellabel Park's existing Local Wireless Game Rooms. This is native game networking: each PC runs its own game. No screen streaming, Nintendo account, Cloudflare account, invite-code exchange or port forwarding is required.
+> **Online play.** Online play is experimental and uses Bellabel Park's existing Local Wireless Game Rooms. This is native game networking: each PC runs its own game. No screen streaming, Nintendo account, Cloudflare account or port forwarding is required.
 >
 > 1. Update with WondershotBuilder and rebuild the game. Both players need compatible game data, including the Bellabel Park add-on.
 > 2. Open **Insert → Online**, enable Online multiplayer and set an **Online name**. Use a nickname: it is shown to other players in the room list and game.
 > 3. Leave **Connection → Private relay** selected to keep IP addresses hidden from peers. For a potential latency improvement, both players can choose **Direct preferred** before entering a room. It tries direct P2P and falls back to TURN; direct peers can learn each other's IP addresses. Connection status reports the selected route. A direct connection does not guarantee lower latency on every network.
-> 4. In the game, select **Play via Local Wireless**. The host creates a room and can set the game's optional password. A PC text-entry dialog replaces the Switch keyboard; enter the game's four-digit password using number keys and press Enter. The guest selects the room from the game's room list and enters the same password if prompted. No separate invite code is needed.
+> 4. In the game, select **Play via Local Wireless**. The host creates a room and can set an optional four-digit invite code on the room creation screen. A PC text-entry dialog replaces the Switch keyboard; enter the invite code using number keys and press Enter. The guest selects the room from the game's room list and enters the same invite code if prompted.
 > 5. Leave the room normally before changing connection settings. The settings apply to the next room. Names and a randomly generated network identity are saved in `user/online/profile.json`. Renaming preserves the identity and existing saves. Do not share that file or copy it between players.
 >
 > Gameplay uses encrypted WebRTC data channels, through Cloudflare TURN in Private relay mode or directly when available in Direct preferred mode. Cloudflare handles room discovery and connection setup. Permanent service credentials stay on the server. Clients receive temporary session and TURN credentials automatically.
 >
 > If a connection drops, try joining again or create a new room.
 >
-> TURN and direct gameplay have been tested using two instances on one PC, including different frame-rate caps. Native transport tests cover admission rejection and a replacement guest joining the same host room. The game’s numeric password entry, rejection of a wrong PIN, successful entry with the correct PIN, and concurrent rooms were also confirmed in the actual game. Gameplay across separate internet connections and different router/NAT combinations still needs broader testing. Each room currently supports one host and one guest. Local multiplayer support does not mean four networked PCs are supported.
+> TURN and direct gameplay have been tested using two instances on one PC, including different frame-rate caps. Native transport tests cover admission rejection and a replacement guest joining the same host room. The game’s numeric invite-code entry, rejection of a wrong PIN, successful entry with the correct PIN, and concurrent rooms were also confirmed in the actual game. Gameplay across separate internet connections and different router/NAT combinations still needs broader testing. Each room currently supports one host and one guest. Local multiplayer support does not mean four networked PCs are supported.
 >
-> If reporting a problem, include the Wondershot version, the selected connection mode and the relevant connection-status/error lines. Review logs first and remove names, personal paths, addresses or other information you do not want public. Never upload profiles, access files, session tokens or credentials.
+> If reporting a problem, include the Wondershot version, the selected connection mode and the relevant connection-status/error lines from `logs/wondershot.log`. Logs and copied bug reports automatically hide your home folder, account name in paths, IP addresses and labelled online names and credentials. Share the log, rather than profiles or other user files.
 
 By default, the Builder reuses `build-workspace` inside the Wondershot install folder, alongside `wonder.exe`. Clear
 **Store the build workspace in the install folder** to use `%LOCALAPPDATA%\WondershotBuilder\work`.
@@ -45,7 +45,7 @@ for the PC, so you need your own legally dumped copy of the game. **No game file
   Shadows, Saturation, Highlight saturation) and SDR gamma, all live in the Insert menu. Menus stay SDR. Ported from my
  HDR for the Switch 1 recomp SuperWonders
 - Music and sound effects everywhere, hub worlds included, and movie audio
-- Experimental **online play in Bellabel Park**, with a room list, optional password, saved names and random player identities. Private relay is the default; direct P2P with TURN fallback is available. See [Online play](#online-play).
+- Experimental **online play in Bellabel Park**, with a room list, optional invite code, saved names and random player identities. Private relay is the default; direct P2P with TURN fallback is available. See [Online play](#online-play).
 - Players 2-4 locally, per-player controls, controller and keyboard assignment, per-player motion controls
 - Button prompts that follow the controller in use (a stand-in for the system button font)
 - The Poplin house dialogue and the Bellabel Park event softlocks above 60 fps fixed

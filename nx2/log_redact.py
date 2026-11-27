@@ -1,8 +1,10 @@
-"""The home folder and the user's name out of a log line, as the game writes its own (gpu/vk/compat/longshot_redact.h, the
+"""Automatic privacy filtering of IPs and labelled connection secrets/names, plus the home folder and the user's name out of a log line, as the game writes its own (gpu/vk/compat/longshot_redact.h, the
 same rule and the same output): the home folder, as a whole, written ~ (%USERPROFILE% on Windows), and the user's name as a
 folder of any path <user>. The rest of the line, the rest of each path too, stays. make_game.py's --log file is written so:
 players attach it to build problems (the console, which the launcher reads, is left as it is)."""
 import os
+import re
+import ipaddress
 import sys
 
 
@@ -31,14 +33,63 @@ def _matches_at(s, at, what, windows):
     return True
 
 
+_PRIVATE_KEYS = (
+    "password passwd pin token access_token session_token refresh_token authorization credential credentials "
+    "api_key apikey secret client_secret turn_password turn_username test_access_key cookie set-cookie "
+    "username display_name displayName player_name playerName nickname network_id networkId uid sdp candidate ice-ufrag ice-pwd"
+).split()
+_PRIVATE_VALUE = re.compile(r"(?:" + "|".join(_PRIVATE_KEYS) + r""")["']?[ \t]*[:=][ \t]*""", re.I)
+
+
+def _address_end(s, at):
+    return (at == len(s) or not _name_char(s[at]) and s[at] != ":"
+            or s[at] == "." and (at + 1 == len(s) or not _name_char(s[at + 1])))
+
+
+def _ip_length(s):
+    # Match the native parser, including IPv4-mapped IPv6 and zone identifiers.
+    v4 = re.match(r"[0-9]+(?:\.[0-9]+){3}", s)
+    if v4:
+        parts = v4[0].split(".")
+        end = v4.end()
+        if all(len(p) <= 3 and int(p) <= 255 for p in parts) and (_address_end(s, end) or s[end] == ":"):
+            return end
+    m = re.match(r"[0-9a-fA-F:.]+(?:%[\w.-]+)?", s)
+    if not m or ":" not in m[0]:
+        return 0
+    end = m.end()
+    if m[0].endswith("."):
+        end -= 1
+    if not _address_end(s, end):
+        return 0
+    try:
+        ipaddress.IPv6Address(s[:end])
+        return end
+    except ValueError:
+        return 0
+
+
 def redact_line(line, home, user, windows):
-    """line with home and user taken out (either may be empty)"""
+    """Remove home/user paths, IPs and sensitive labelled values (including online names)."""
     home = home or ""
     while len(home) > 1 and _sep(home[-1]):
         home = home[:-1]
     with_home = len(home) > 1
     out, i, n = [], 0, len(line)
     while i < n:
+        if i == 0 or not _name_char(line[i - 1]):
+            value = _PRIVATE_VALUE.match(line, i)
+            if value:
+                out.append(line[i:value.end()] + "<redacted>")
+                i = value.end()
+                while i < n and line[i] not in "\r\n":
+                    i += 1
+                continue
+            address = _ip_length(line[i:])
+            if address:
+                out.append("<ip>")
+                i += address
+                continue
         if (with_home and (i == 0 or (not _name_char(line[i - 1]) and not _sep(line[i - 1])))
                 and _matches_at(line, i, home, windows) and (i + len(home) >= n or not _name_char(line[i + len(home)]))):
             out.append("%USERPROFILE%" if windows else "~")

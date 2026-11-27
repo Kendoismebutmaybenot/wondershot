@@ -148,6 +148,31 @@ CASES = [
     ("nothing here\n", "", "", 0, "nothing here\n"),
 ]
 
+# Synthetic connection data; exercise every log/report sink and Python parity.
+CASES += [('peer 203.0.113.27. IPv6 2001:db8::1.\n', '', '', 1, 'peer <ip>. IPv6 <ip>.\n'),
+('peer 203.0.113.27:54321 via 192.168.1.2\n', '', '', 1, 'peer <ip>:54321 via <ip>\n'),
+ ('[2001:db8::42]:3478 ::1 fe80::1%ethernet\n', '', '', 1, '[<ip>]:3478 <ip> <ip>\n'),
+ ('::ffff:192.0.2.4 2001:db8:0:1:2:3:4:5\n', '', '', 1, '<ip> <ip>\n'),
+ ('driver 32.0.15.1234 OS 10.0.26100.0 nn::audio 12:34:56 v1.2.3.4\n',
+  '',
+  '',
+  1,
+  'driver 32.0.15.1234 OS 10.0.26100.0 nn::audio 12:34:56 v1.2.3.4\n'),
+ ('Authorization: Bearer synthetic-secret\n', '', '', 1, 'Authorization: <redacted>\n'),
+ ('GET /join?access_token=synthetic&other=secret\n', '', '', 1, 'GET /join?access_token=<redacted>\n'),
+ ('{"display_name": "Test Person", "uid": "synthetic"}\n', '', '', 1, '{"display_name": <redacted>\n'),
+ ('password="multi word \\" secret" status=failed\r\n', '', '', 1, 'password=<redacted>\r\n'),
+ ('nickname: Test Person', '', '', 1, 'nickname: <redacted>'),
+ ('candidate:123 1 UDP 2130706431 192.0.2.5 40000 typ host\n', '', '', 1, 'candidate:<redacted>\n'),
+ ('ice-pwd: synthetic-secret\n', '', '', 1, 'ice-pwd: <redacted>\n'),
+ ('token=truncated', '', '', 1, 'token=<redacted>'),
+ ('tokens received: 4; token_count=8; pinning enabled\n',
+  '',
+  '',
+  1,
+  'tokens received: 4; token_count=8; pinning enabled\n'),
+ ('password=<redacted>\npeer <ip>\n', '', '', 1, 'password=<redacted>\npeer <ip>\n')]
+
 
 def compile_harness(cc, tmp):
     src, exe = tmp / "harness.c", tmp / ("harness" + (".exe" if os.name == "nt" else ""))
@@ -302,7 +327,7 @@ def main():
         menu_checks(a.cxx, exe, tmp)
         here_checks(exe, tmp)
         file_checks(exe, tmp)
-    print("PASS: the saved logs without the user name (the rule in C and Python, the game's line, the file after its run, "
+    print("PASS: automatic log privacy filtering (paths, IPs, sensitive fields); saved logs without the user name (the rule in C and Python, the game's line, the file after its run, "
           "the builder's log, the callers)")
 
 

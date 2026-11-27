@@ -18,6 +18,7 @@
 #include <regex>
 #include <fstream>
 #include "online_ui.h"
+#include "../../gpu/vk/compat/longshot_redact.h"
 #include <thread>
 
 using json = nlohmann::json;
@@ -25,8 +26,10 @@ using namespace std::chrono_literals;
 namespace {
 std::atomic<void (*)(const char *)> gameLogger{nullptr};
 void logOnline(const std::string &message) {
-    std::fprintf(stderr, "wonder-online: %s\n", message.c_str());
-    if (auto logger = gameLogger.load()) logger(message.c_str());
+    std::string clean(message.size() * 7 + 1, '\0');
+    clean.resize(longshot_redact_line(clean.data(), clean.size(), message.data(), message.size(), nullptr, nullptr, 1));
+    std::fprintf(stderr, "wonder-online: %s\n", clean.c_str());
+    if (auto logger = gameLogger.load()) logger(clean.c_str());
 }
 struct Handle {
     HINTERNET value;
