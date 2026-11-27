@@ -103,4 +103,15 @@ static inline void hos_wonder_wide_fit(unsigned *w, unsigned *h) {
         hos_wide_size(*h, (double)*w / *h, 3840.0 * 2160.0, w, h);
 }
 
+/* Wonder must resolve a docked PC framebuffer even for a 16:9 selection. A
+   monitor-shaped aspect choice widens that selection; explicit non-16:9 sizes
+   keep their own shape. Keep the startup render-pool limit in both cases. */
+static inline void hos_wonder_output_size(unsigned *w, unsigned *h, int follow_monitor,
+                                          unsigned screen_w, unsigned screen_h) {
+    if (!hos_output_own_shape(*w, *h) && follow_monitor &&
+        hos_wonder_native_aspect(screen_w, screen_h))
+        hos_wide_size(*h, (double)screen_w / screen_h, 3840.0 * 2160.0, w, h);
+    hos_wonder_wide_fit(w, h);
+}
+
 #endif

@@ -125,6 +125,7 @@ static int handheld(void) {
     }
     return v;
 }
+int hos_output_handheld(void) { return handheld(); }
 /* (longshot) The Insert menu's Output resolution (output_res=, HOS_OUTPUT_RES over it), docked only: a size, "<width>x<height>",
    each side a multiple of 8 (rounded down to one), at least 640 x 360, at most 5120 x 2880's pixels (the largest the render
    targets' pool, hos_rt_pool_size, was played at) and between 5:4 and 48:9 in shape (host/hos_main.c's screen shapes); anything
@@ -187,6 +188,10 @@ static int output_mode(void) {   /* (an explicit size: 1; the game's own: 0) */
 uint32_t hos_output_size(int height) {
     if (!output_mode()) return height ? 1440 : 2560;
     return height ? output_h : output_w;
+}
+/* Wonder's framebuffer has no OoT graphics-tier multiplier: resolve its reduced size directly. */
+uint32_t hos_wonder_frame_size(int height) {
+    return output_mode() ? (height ? output_h : output_w) : (height ? 1152 : 2048);
 }
 /* (longshot) The render targets' GPU pool (nx2/oot_patches.py), 0x13100000 bytes as shipped, for 2560 x 1440: a 3840x2160 3D at
    the 4K output ran out of it. Scaled with the output's pixels, or the widescreen picture's when it has more (host/hos_main.c:

@@ -177,7 +177,9 @@ int main(int argc, char **argv) {
     unsigned scene_w, scene_h;
     game_size(1.0f, scene_w, scene_h);
     unsigned fitted_w = mode ? w : 2048, fitted_h = mode ? h : 1152;
-    if (hos_wonder_native_aspect(fitted_w, fitted_h)) hos_wonder_wide_fit(&fitted_w, &fitted_h);
+    hos_wonder_wide_fit(&fitted_w, &fitted_h);
+    assert(hos_wonder_frame_size(0) == (mode ? w : 2048));
+    assert(hos_wonder_frame_size(1) == (mode ? h : 1152));
     assert(scene_w == (opts.handheld ? 1536 : fitted_w));
     assert(scene_h == (opts.handheld ? 864 : fitted_h));
     if (mode == 1) assert(strcmp(tx_resolution(2), "75% (1440x810)") == 0);
@@ -210,7 +212,7 @@ int main(int argc, char **argv) {
         ("2", 0, None, 3, 3840, 2160, "3840x2160", 687, "3840x2160"),
         ("3", 0, None, 1, 1920, 1080, "1920x1080", 512, "1920x1080"),
         ("4", 0, None, 4, 5120, 1440, "5120x1440", 610, "5120x1440"),
-        ("5", 0, None, 5, 5120, 2880, "5120x2880", 900, "5120x2880"),   # (#1670's 5K)
+        ("5", 0, None, 5, 5120, 2880, "3840x2160", 900, "5120x2880"),   # (Wonder startup-pool cap)
         ("6", 0, None, 0, 2560, 1440, "2048x1152 (reduced)", 512, "2048x1152"),
         ("1", 0, "3", 1, 1920, 1080, "1920x1080", 512, "1920x1080"),
         ("3", 1, "3", 0, 2560, 1440, "2048x1152 (reduced)", 512, "2048x1152"),   # (handheld: the game's own)
@@ -219,11 +221,11 @@ int main(int argc, char **argv) {
         ("1920x1080", 0, None, 1, 1920, 1080, "1920x1080", 512, "1920x1080"),
         ("3840x2160", 0, None, 3, 3840, 2160, "3840x2160", 687, "3840x2160"),
         ("5120X1440", 0, None, 4, 5120, 1440, "5120x1440", 610, "5120x1440"),
-        ("5120x2880", 0, None, 5, 5120, 2880, "5120x2880", 900, "5120x2880"),
+        ("5120x2880", 0, None, 5, 5120, 2880, "3840x2160", 900, "5120x2880"),
         ("3440x1440", 0, None, 6, 3440, 1440, "3440x1440", 512, "3440x1440"),   # (the player's own)
         ("1366x768", 0, None, 6, 1360, 768, "1360x768", 512, "1360x768"),   # (a multiple of 8, rounded down)
         ("5120x2160", 0, None, 6, 5120, 2160, "4416x1864", 900, "5120x2160"),   # (between the two 5120s)
-        ("0", 0, "5120x2880", 5, 5120, 2880, "5120x2880", 900, "5120x2880"),
+        ("0", 0, "5120x2880", 5, 5120, 2880, "3840x2160", 900, "5120x2880"),
         ("2560x1080", 0, None, 6, 2560, 1080, "2560x1080", 512, "2560x1080"),   # (2560 wide, not 1440 high)
         ("2560x1600", 0, None, 6, 2560, 1600, "2560x1600", 512, "2560x1600"),
         ("320x200", 0, None, 0, 2560, 1440, "2048x1152 (reduced)", 512, "2048x1152"),   # (out of range: the game's own)
@@ -232,7 +234,7 @@ int main(int argc, char **argv) {
         ("6144x2560", 0, None, 0, 2560, 1440, "2048x1152 (reduced)", 512, "2048x1152"),
         ("640x4320", 0, None, 0, 2560, 1440, "2048x1152 (reduced)", 512, "2048x1152"),   # (narrower than 5:4)
         ("5760x1080", 0, None, 6, 5760, 1080, "5760x1080", 515, "5760x1080"),
-        ("7680x1440", 0, None, 6, 7680, 1440, "7680x1440", 900, "7680x1440"),   # (5120x2160's pixels: full size)
+        ("7680x1440", 0, None, 6, 7680, 1440, "6528x1224", 900, "7680x1440"),   # (Wonder startup-pool cap)
         ("7688x1440", 0, None, 0, 2560, 1440, "2048x1152 (reduced)", 512, "2048x1152"),   # (wider than 48:9)
         ("3840 x 2160", 0, None, 0, 2560, 1440, "2048x1152 (reduced)", 512, "2048x1152"),   # (not a size)
         ("abc", 0, None, 0, 2560, 1440, "2048x1152 (reduced)", 512, "2048x1152"),

@@ -289,7 +289,7 @@ Out picture_for(int v, bool* native) {
     uint32_t sw = 0, sh = 0;
     if (native) *native = false;
     screen_size(&sw, &sh);
-    if (!opts.handheld && hos_wonder_native_aspect(o.w, o.h)) hos_wonder_wide_fit(&o.w, &o.h);
+    if (!opts.handheld) hos_wonder_wide_fit(&o.w, &o.h);
     if (native && v && !opts.handheld) *native = sw && o.w == (sw & ~7u) && o.h == (sh & ~7u);
     return o;
 }

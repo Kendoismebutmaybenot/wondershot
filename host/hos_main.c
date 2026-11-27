@@ -1955,7 +1955,18 @@ static void wonder_wide_init(size_t image_size, unsigned width, unsigned height)
     /* Read by the default perspective camera and the routine that computes
        the horizontal bounds of the orthographic gameplay camera. */
     const size_t aspect_offset = 0x2c71b14;
-    if (!hos_wonder_native_aspect(width, height) || image_size < aspect_offset + sizeof(float)) return;
+    int hos_output_handheld(void);
+    if (hos_output_handheld() || !hos_output_size_valid(width, height) || image_size < aspect_offset + sizeof(float)) return;
+    int hos_ini_option(const char *, int);
+    void hos_monitor_prepare(void);
+    int hos_monitor_screen_size(int *, int *);
+    int sw = 0, sh = 0;
+    hos_monitor_prepare();
+    if (!hos_monitor_screen_size(&sw, &sh)) {
+        sw = GetSystemMetrics(SM_CXSCREEN); sh = GetSystemMetrics(SM_CYSCREEN);
+    }
+    hos_wonder_output_size(&width, &height, hos_ini_option("ultrawide", 1),
+                           sw > 0 ? (unsigned)sw : 0, sh > 0 ? (unsigned)sh : 0);
 
     uint8_t *const ratio_address = A64_MEM + IMAGE_BASE + aspect_offset;
     uint32_t original;
@@ -2347,7 +2358,8 @@ static int game_main(int argc, char **argv) {
     uint32_t hos_output_size(int height);
     if (!strcmp(hos_main_build_id, "ec47e6f8846d2a7b6892e2682845c7255f7117ae")) {
         /* The selected output shape sets Wonder's render target and camera at boot. */
-        wonder_wide_init(n, hos_output_size(0), hos_output_size(1));
+        uint32_t hos_wonder_frame_size(int height);
+        wonder_wide_init(n, hos_wonder_frame_size(0), hos_wonder_frame_size(1));
     } else {   /* (longshot) Widescreen and ultrawide (nx2/oot_wide.py): HOS_ASPECT=<ratio> (2.3889 for 3440x1440), else the Insert menu's
            Aspect ratio (on unless it says 0) takes the main monitor's shape. The game's picture takes that shape at its own height (the
            world wider at the sides on an ultrawide screen, narrower on a 16:10 or 4:3 one), its 16:9 cameras the picture's ratio.

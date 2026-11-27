@@ -776,6 +776,15 @@ int ultrawide_read = 1;   // (ultrawide= as read: saved again while HOS_OUTPUT_R
 /// options and HOS_OUTPUT_RES are read), and the Aspect ratio of the size chosen: a size of a shape of its own is that shape,
 /// a 16:9 one is the monitor's shape or 16:9, as ultrawide= says (menu_init, before restart_init: what the run starts with)
 void outputs_sync() {
+    // The native Wonder startup may widen a saved 16:9 size to the monitor's
+    // shape. Reflect that resolved framebuffer instead of saving 16:9 over it.
+    if (!opts.handheld && host && host->version >= 44 && host->wonder_wide_size) {
+        const uint64_t running = host->wonder_wide_size();
+        const Out selected = output_at(opts.output_res);
+        if (running && !hos_output_own_shape(selected.w, selected.h) &&
+            hos_output_own_shape((uint32_t)running, (uint32_t)(running >> 32)))
+            opts.output_res = output_choice_of((uint32_t)running, (uint32_t)(running >> 32));
+    }
     const std::vector<dm::Shape> shapes = output_shapes();
     for (Row& r : rows) {
         if (r.value == &opts.output_res) r.hi = last_choice();
