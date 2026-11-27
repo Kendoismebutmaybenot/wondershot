@@ -10,7 +10,7 @@
 
 <a name="online-play"></a>
 
-> **Online play.** Online play is experimental and uses Bellabel Park's existing Local Wireless Game Rooms. This is native game networking: each PC runs its own game. No screen streaming, Nintendo account, Epic account, Cloudflare account, invite-code exchange or port forwarding is required.
+> **Online play.** Online play is experimental and uses Bellabel Park's existing Local Wireless Game Rooms. This is native game networking: each PC runs its own game. No screen streaming, Nintendo account, Cloudflare account, invite-code exchange or port forwarding is required.
 >
 > 1. Update with WondershotBuilder and rebuild the game. Both players need compatible game data, including the Bellabel Park add-on.
 > 2. Open **Insert → Online**, enable Online multiplayer and set an **Online name**. Use a nickname: it is shown to other players in the room list and game.
