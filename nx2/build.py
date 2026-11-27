@@ -1876,6 +1876,8 @@ def main():
     host_fl = target() + CPU + (["-I" + POSIX, "-D_GNU_SOURCE"] if LINUX else []) + \
         ["-I" + HOST, "-I" + rt64, "-I" + gen, "-Wno-everything", "-O2", "-g0", "-mcx16", "-DA64_POLLING"] + WRITE_TRACK + \
         (TRACY_FLAGS + ["-DTRACY_EXPORTS"] if TRACY else [])
+    if a.standalone and not LINUX:
+        host_fl += ["-DWONDER_WITH_ONLINE"]
     host_roots = (HOST, gen, rt64, GPU, os.path.join(OPUS, "include"), ZSTD)
     host_blob = deps + tree_headers(HOST) + tree_headers(GPU, skip=("eden", "sirit", "third_party"))
     host_extras = ffmpeg_version_key()
@@ -2263,6 +2265,11 @@ def main():
                     os.path.basename(obj), " ".join(sorted(set(names) - set(done)))), flush=True)
                 return 1
         objs = [renamed.get(o, o) for o in objs]
+    online_libs = []
+    if a.standalone and not vk_only and not LINUX:
+        import wonder_online
+        online_libs = wonder_online.libraries(out, cc, a.jobs)
+        objs = wonder_online.redirect_socket(objs, cc, out)
     rsp = os.path.join(out, "objs.rsp")
     open(rsp, "w", encoding="utf-8").write("\n".join('"%s"' % o.replace("\\", "/") for o in objs))
     if a.standalone and not vk_only and LINUX:
@@ -2296,7 +2303,7 @@ def main():
         exe = os.path.join(out, EXE)   # (+ longshot.map: crash offsets -> f_<guest address>)
         t = time.time()
         r = run_link([cc] + toolchain.native_target() + toolchain.native_link() +
-                           ["-o", exe] + linker("/map:" + exe[:-4] + ".map") + [toolchain.link_opt("/stack:8388608"), "@" + rsp] + HOT_ORDER() + HOST_LIBS +
+                           ["-o", exe] + linker("/map:" + exe[:-4] + ".map") + [toolchain.link_opt("/stack:8388608"), "@" + rsp] + HOT_ORDER() + HOST_LIBS + online_libs +
                            ([toolchain.link_opt("/nodefaultlib:clang_rt.profile.lib")] if PGO == "gen" else []) +
                            exe_resources() +   # (the exe's icon and name: nx2/game_title.py, nx2/make_icon.py)
                            [win_manifest.write(os.path.join(out, "longshot_manifest.res"))] +   # (UTF-8 paths: nx2/win_manifest.py)

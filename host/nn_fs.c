@@ -92,6 +92,12 @@ static BOOL fs_FindNextFile(HANDLE h, WIN32_FIND_DATAA *fd) {
 #endif
 
 const char *hos_romfs_dir, *hos_user_dir;
+#ifdef WONDER_WITH_ONLINE
+#include "wonder_online/online_ui.h"
+#define SAVE_UID_WORD(arg, word) (wonder_profile_save_uid()[word])
+#else
+#define SAVE_UID_WORD(arg, word) G64(ARG(arg) + 8 * (word))
+#endif
 void hos_system_event_init(uint64_t key, int autoclear);
 
 #define R_PATH_NOT_FOUND 0x202          /* fs::ResultPathNotFound */
@@ -347,8 +353,8 @@ static int user_mount(const char *name, const char *sub) {
 /* nn::fs::IsSaveDataExisting(ApplicationId, account::Uid const&) -> bool */
 HLE(_ZN2nn2fs18IsSaveDataExistingENS_13ApplicationIdERKNS_7account3UidE) {
     char root[HOS_FS_PATH];
-    snprintf(root, sizeof root, "%s\\save\\%016llx%016llx", hos_user_dir, (unsigned long long)G64(ARG(1) + 8),
-             (unsigned long long)G64(ARG(1)));
+    snprintf(root, sizeof root, "%s\\save\\%016llx%016llx", hos_user_dir, (unsigned long long)SAVE_UID_WORD(1, 1),
+             (unsigned long long)SAVE_UID_WORD(1, 0));
     RET(GetFileAttributesA(root) != INVALID_FILE_ATTRIBUTES);
 }
 /* (longshot, Wonder Switch 2) the Uid-only overloads: always "exists", MountSaveData creates the folder.
@@ -364,13 +370,13 @@ HLE(_ZN2nn2fs18IsSaveDataExistingEPbRKNS_7account3UidE) {
 /* MountSaveData(char const*, account::Uid const&) */
 HLE(_ZN2nn2fs13MountSaveDataEPKcRKNS_7account3UidE) {
     char sub[64];
-    snprintf(sub, sizeof sub, "save\\%016llx%016llx", (unsigned long long)G64(ARG(1) + 8), (unsigned long long)G64(ARG(1)));
+    snprintf(sub, sizeof sub, "save\\%016llx%016llx", (unsigned long long)SAVE_UID_WORD(1, 1), (unsigned long long)SAVE_UID_WORD(1, 0));
     RET(user_mount(gstr(ARG(0)), sub) ? 0 : R_NOT_MOUNTED);
 }
 /* MountSaveDataReadOnly(char const*, ApplicationId, account::Uid const&) */
 HLE(_ZN2nn2fs21MountSaveDataReadOnlyEPKcNS_13ApplicationIdERKNS_7account3UidE) {
     char sub[64];
-    snprintf(sub, sizeof sub, "save\\%016llx%016llx", (unsigned long long)G64(ARG(2) + 8), (unsigned long long)G64(ARG(2)));
+    snprintf(sub, sizeof sub, "save\\%016llx%016llx", (unsigned long long)SAVE_UID_WORD(2, 1), (unsigned long long)SAVE_UID_WORD(2, 0));
     RET(user_mount(gstr(ARG(0)), sub) ? 0 : R_NOT_MOUNTED);
 }
 HLE(_ZN2nn2fs21MountTemporaryStorageEPKc) { RET(user_mount(gstr(ARG(0)), "temp") ? 0 : R_NOT_MOUNTED); }

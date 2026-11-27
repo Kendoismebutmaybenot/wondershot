@@ -51,14 +51,11 @@ HLE(_ZN2nn7friends29GetPlayHistoryRegistrationKeyEPNS0_26PlayHistoryRegistration
     RET(FAIL(121, 1));
 }
 
-/* ---- nn::swkbd: buffer sizes the game allocates by, and a keyboard the player always cancels --------------------- */
+/* ---- nn::swkbd: work-buffer sizes (PC text entry is in nn_swkbd.c) --------------------- */
 HLE(_ZN2nn5swkbd25GetRequiredWorkBufferSizeEb) { RET(0xd000); }
 HLE(_ZN2nn5swkbd27GetRequiredStringBufferSizeEv) { RET(0x7d4); }
 HLE(_ZN2nn5swkbd34GetRequiredTextCheckWorkBufferSizeEv) { RET(0x7d4); }
-HLE(_ZN2nn5swkbd12ShowKeyboardEPNS0_6StringERKNS0_15ShowKeyboardArgE) {
-    hos_log("swkbd: the game opened the software keyboard: cancelled (lr %#llx)", (unsigned long long)c->x[30]);
-    RET(FAIL(136, 1));
-}
+
 
 /* ---- nn::audio: the two float getters (their answer is in v0) ---------------------------------------------------- */
 HLE(_ZN2nn5audio26GetAudioDeviceOutputVolumeEPKNS0_15AudioDeviceNameE) { ret_float(c, 1.0f); }

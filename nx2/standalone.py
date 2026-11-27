@@ -32,7 +32,7 @@ def implemented(host=HOST):
     """C names of the HLE functions in host/*.c: `void imp_x(Ctx` definitions and `HLE(x)` macros"""
     names = set()
     for f in os.listdir(host):
-        if f.endswith(".c"):
+        if f.endswith(".c") and not (f == "nn_wonder_ldn.c" and not toolchain.windows()):
             src = open(os.path.join(host, f), errors="replace").read()
             names |= set(re.findall(r"^void (imp_\w+)\(Ctx", src, re.M))
             names |= {"imp_" + n for n in re.findall(r"^HLE\((\w+)\)", src, re.M)}

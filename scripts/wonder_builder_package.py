@@ -24,7 +24,7 @@ from helpers import ROOT  # noqa: E402
 SOURCES = ("gpu", "host", "nx2", "scripts", "third_party", "assets/profiles", "assets/pipeline_states", "builder/setup")
 FILES = ("tools.lock", "requirements.txt", "LICENSE", "README.md")
 SKIP_DIRS = {"__pycache__", ".git", "target", "work", "build", "tests", ".venv", "node_modules"}
-SKIP_SUFFIX = (".pyc", ".pyo", ".obj", ".o", ".pdb", ".ilk")
+SKIP_SUFFIX = (".pyc", ".pyo", ".obj", ".o", ".pdb", ".ilk", ".exe", ".dll", ".so")
 # (built on the player's PC by third_party/a64-kit/lift/build_emit.py the first time the lift runs: a checkout's copy stays out)
 SKIP_NAMES = {"a64emit.dll", "a64emit.dll.sha1"}
 
@@ -77,7 +77,7 @@ def package(a):
         os.makedirs(os.path.join(dest, "third_party", "renhdrum"), exist_ok=True)
         shutil.copyfile(dll, os.path.join(dest, "third_party", "renhdrum", "renhdrum.dll"))
     for stamp in (os.path.join(dest, "version.txt"), os.path.join(out, "builder_version.txt")):
-        with open(stamp, "w", encoding="utf-8") as f:
+        with open(stamp, "w", encoding="utf-8", newline="\n") as f:
             f.write((a.version or "dev") + "\n")
     print("package folder: %s (%d source files)" % (out, total))
     if a.zip:

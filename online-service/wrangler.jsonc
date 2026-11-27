@@ -1,0 +1,14 @@
+{
+  "name": "wondershot-rendezvous",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-11-27",
+  "workers_dev": true,
+  "durable_objects": { "bindings": [{ "name": "ROOMS", "class_name": "WonderRoom" }, { "name": "DIRECTORY", "class_name": "WonderDirectory" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["WonderRoom"] }, { "tag": "v2", "new_sqlite_classes": ["WonderDirectory"] }],
+  "vars": { "TURN_ENABLED": "true", "PRIVATE_TEST": "true" },
+  "ratelimits": [
+    {"name":"ADMISSION_LIMIT","namespace_id":"47201","simple":{"limit":6,"period":60}},
+    {"name":"REQUEST_LIMIT","namespace_id":"47202","simple":{"limit":600,"period":60}}
+  ],
+  "observability": { "enabled": false }
+}

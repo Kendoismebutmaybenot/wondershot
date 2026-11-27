@@ -237,7 +237,12 @@ HLE(_ZN2nn2oe25TryPopNotificationMessageEPj) {
 HLE(_ZN2nn2oe22PopNotificationMessageEv) { for (;;) hos_sleep_ns(1000000000LL); }
 
 /* ---- nn::account: one user ------------------------------------------------------------------------------------ */
+#ifdef WONDER_WITH_ONLINE
+#include "wonder_online/online_ui.h"
+#define user_uid (wonder_profile_uid())
+#else
 static const uint64_t user_uid[2] = {0x0000000000000001ULL, 0x5a3c9e1f0b7d2468ULL};
+#endif
 HLE(_ZN2nn7account10InitializeEv) {}
 /* TryOpenPreselectedUser(UserHandle*) -> bool. A handle is three words; ours carries the uid. */
 HLE(_ZN2nn7account22TryOpenPreselectedUserEPNS0_10UserHandleE) {
@@ -256,7 +261,11 @@ HLE(_ZN2nn7account9GetUserIdEPNS0_3UidERKNS0_10UserHandleE) {
 /* GetNickname(Nickname*, Uid const&) -> Result: Nickname is char[33] */
 HLE(_ZN2nn7account11GetNicknameEPNS0_8NicknameERKNS0_3UidE) {
     memset(GP(ARG(0)), 0, 33);
+    #ifdef WONDER_WITH_ONLINE
+    wonder_profile_name((char *)GP(ARG(0)), 33);
+#else
     memcpy(GP(ARG(0)), "Player", 6);
+#endif
     RET(0);
 }
 HLE(_ZN2nn7account16GetUserExistenceEPbRKNS0_3UidE) {

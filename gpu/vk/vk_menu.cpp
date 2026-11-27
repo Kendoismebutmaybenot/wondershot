@@ -16,6 +16,13 @@
 // Later keeps the saved settings for the next start and is not asked again until they change; Restart now saves and
 // closes the window as the player would, and the game starts again (WM_APP + 9: host/hos_relaunch.c).
 #include <atomic>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+#include "../../host/wonder_online/online_ui.h"
 #include <chrono>
 #include <cmath>
 #include <cerrno>
@@ -116,7 +123,8 @@ enum MenuTab {
     TAB_NFC = 4,     // (longshot: the player's NFC tags, held to the game's reader: host/nn_nfp.c)
     TAB_MODS = 5,    // (the mods folder's mods and their cheats, shown when there are mods: draw_mods)
     TAB_DEBUG = 6,   // (the OoT debug tools, a tab of their own)
-    TAB_COUNT = 7,
+    TAB_ONLINE = 7,
+    TAB_COUNT = 8,
     TAB_MOTION = TAB_COUNT,   // (longshot: not a tab of the strip, the Motion page that the Controls tab's Motion row
                               // opens: one past the strip's tabs, so a tab added before TAB_COUNT moves it along)
     TAB_FPS_DEV = TAB_MOTION + 1,   // (longshot: not a tab either, the FPS counter's Dev lines page, from the Gameplay tab)
@@ -324,6 +332,8 @@ void text_set(TextField& f, const char* t) {
     f.len = f.caret = (int)strlen(f.text);
 }
 
+#include "../../host/wonder_online/menu.inc"
+
 // (#1633) This file's own rows: the core module's (MENU_MODULE(core) below). The menu draws `rows`, these and the rows
 // modules describe, in the order the model works out
 namespace core {
@@ -403,9 +413,9 @@ constexpr int kCoreRows = sizeof core::rows / sizeof core::rows[0];
 const char* (ini_key)(const Row& r);   // (spelled apart from its definition: the checks cut that by its text)
 /// The model's page for each MenuTab: the strip's tabs, then the pages a row opens
 const char* const kTabIds[TAB_PAGE + 1] = {"graphics", "audio",  "gameplay",    "controls",     "nfc",
-                                           "mods",     "debug",  "motion",      "fps_details",  "controls_page"};
+                                           "mods",     "debug", "online", "motion",      "fps_details",  "controls_page"};
 const char* const kTabLabels[TAB_PAGE + 1] = {"Graphics", "Audio", "Gameplay", "Controls",            "NFC",
-                                              "Mods",     "Debug", "Motion",   "FPS counter details", "Controls"};
+                                              "Mods",     "Debug", "Online", "Motion",   "FPS counter details", "Controls"};
 int page_tab(const char* id);   // (a page's MenuTab by its id: below)
 // (rows modules describe, headings included; past it a row is left out, and logged. Every row is a module's: 110 of them
 // when the last moved, so room to grow; tests/test_menu_module_slots.py keeps the menu within it)
@@ -1486,7 +1496,7 @@ struct FieldRow {
     TextField* field;
     const char* (*apply)();
 };
-const FieldRow field_rows[] = {{"Custom output size", &output_field, output_field_apply}};
+const FieldRow field_rows[] = {{"Custom output size", &output_field, output_field_apply}, {"Online name", &online_name_field, online_name_apply}};
 /// A row that is a text field (a row with no value, by its name, as is_motion_row): its field and apply; nullptr any other
 const FieldRow* field_row(const Row& r) {
     for (const FieldRow& f : field_rows)
@@ -2259,7 +2269,7 @@ void bug_report_save() {
 }
 namespace {   // (#1633: the anonymous namespace again, after what the modules ask)
 
-const char* const tab_titles[TAB_COUNT] = {"Graphics", "Audio", "Gameplay", "Controls", "NFC", "Mods", "Debug"};
+const char* const tab_titles[TAB_COUNT] = {"Graphics", "Audio", "Gameplay", "Controls", "NFC", "Mods", "Debug", "Online"};
 inline const char* tab_title(int t) { return t >= 0 && t < TAB_COUNT ? tab_titles[t] : "Settings"; }
 inline bool cheat_is_toggle(int c) { return c == 0 || c == 1 || c == 7; }
 
@@ -2316,7 +2326,12 @@ bool mods_present() {
     int e;
     return can_mods() && host->mod_info(0, &n, &d, &o, &e);
 }
-bool tab_shown(int t) { return t != TAB_MODS || mods_present(); }
+bool tab_shown(int t) {
+#ifndef _WIN32
+    if (t == TAB_ONLINE) return false;
+#endif
+    return t != TAB_MODS || mods_present();
+}
 struct ModLine {
     char kind;   // 'm' a mod (index: its place), 'h' the heading over a mod's cheats, 's' a cheat file's own heading, 'c' a cheat
     int index;   // (the cheat's, for 'h', 's' and 'c')
@@ -2498,7 +2513,7 @@ void draw_options(ui::Ctx& c) {
         }
     }
     {   // (which build, at the banner's right, so a report can say it without opening the log: as players see it, version_text,
-        // "v3.0.0-rc.1" or "Nightly 46 · 434712bb"; the log and the bug report keep the whole name. Under it, a development
+        // "v3.0.0-rc.1" or "Nightly 46 Ã‚Â· 434712bb"; the log and the bug report keep the whole name. Under it, a development
         // run's own name for what it tests, LONGSHOT_BUILD_NAME (dev.py queue run --desc), when the run sets one; draw_startup shows it too)
         const std::string ver = version_text(LONGSHOT_VERSION);
         const char* named = getenv("LONGSHOT_BUILD_NAME");
@@ -2949,7 +2964,7 @@ void draw_inventory(ui::Ctx& c) {
             px0 = nx + side + 18 * s;
         }
         char range[64];
-        snprintf(range, sizeof range, "%d–%d of %d", first - begin + 1, std::min(end, first + inventory_capacity) - begin, end - begin);
+        snprintf(range, sizeof range, "%dÃ¢â‚¬â€œ%d of %d", first - begin + 1, std::min(end, first + inventory_capacity) - begin, end - begin);
         ui::text_mid(c, c.f.body, 15 * s, px0, my, ui::kSoft, range);
         if (have >= 0) {
             const float bw = ui::size_of(c.f.strong, 18 * s, "Edit amount").x + 36 * s;
@@ -3071,7 +3086,7 @@ void draw_teleport(ui::Ctx& c) {
         c.d->PushClipRect(ImVec2(left, detail), ImVec2(a.x - 12 * s, detail + strip), true);
         ui::text_mid(c, c.f.strong, 18 * s, left, my - 10 * s, ui::kInkBright, teleport_names[teleport_choice]);
         char where[64];
-        snprintf(where, sizeof where, note ? "%s · %s" : "%s", teleport_sections[teleport_section_of(teleport_choice)].name, note);
+        snprintf(where, sizeof where, note ? "%s Ã‚Â· %s" : "%s", teleport_sections[teleport_section_of(teleport_choice)].name, note);
         ui::text_mid(c, c.f.body, 15 * s, left, my + 12 * s, ui::kAccent, where);
         c.d->PopClipRect();
         ui::button(c, a, b, "Travel", false);
@@ -3461,7 +3476,7 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
     if (foot) {   // (the footer, at the column's foot: the version, as the banner says it; at Dev the CPU, the GPU, its driver. A line
         // too long for the column's width loses its end)
         static std::string cpu, gpu, drv, fit[6], fit_lines[2];
-        static const std::string ver = std::string("Wondershot ") + version_text(LONGSHOT_VERSION) + " · built on Longshot by MagicBeanDev";
+        static const std::string ver = std::string("Wondershot ") + version_text(LONGSHOT_VERSION) + " Ã‚Â· built on Longshot by MagicBeanDev";
         static float fit_w = 0;
         if (gpu.empty()) cpu = hardware_cpu_name(bug_report::cpu_name()), gpu = hardware_gpu_name(device_name_text()), drv = driver_text(), fit_w = 0;
         const auto shorten = [&](std::string t, float room) {
@@ -4018,6 +4033,7 @@ void menu_init() {
     if (!has_low_end_mode && old_weak_laptop_mip_trim) opts.low_end_mode = 1;
     menu_debug_rows(opts.descriptor_reuse, opts.sampler_cache);   // (the Debug rows that apply in play: what was loaded)
     fps_level_now.store(fps_stats::level_of(opts.show_fps), std::memory_order_relaxed);
+    online_profile_show();
     output_field_show();   // (longshot: Custom output size, the size of the player's own, as the file has it)
     // (the environment over the saved rows, for this run only: env_override, save)
     if (const char* e = getenv("RX_VK_FRAMEGEN_MULT")) env_override(&opts.framegen, std::min(std::max(atoi(e), 2), 8));
@@ -4349,7 +4365,7 @@ void menu_option_set(int id, int value) {
 // its own thread: menu_mu keeps them apart from menu_tick (the present's thread) and from menu_option_set (the game's)
 bool bridge_row(int i) { return rows[i].value && !rows[i].heading && rows[i].cheat < 0 && row_shown(i); }
 void bridge_fill(int i, MkwVkSetting* out) {
-    static const char* const tabs[] = {"graphics", "audio", "gameplay", "controls", "nfc", "mods", "debug", "motion",
+    static const char* const tabs[] = {"graphics", "audio", "gameplay", "controls", "nfc", "mods", "debug", "online", "motion",
                                        "gameplay", "controls"};
     static_assert(sizeof tabs / sizeof tabs[0] == TAB_PAGE + 1, "a name for each MenuTab");
     const Row& r = rows[i];
@@ -5276,7 +5292,7 @@ void menu_tick() {
             else if (press[7] && r.setting && r.setting->on_activate &&   // (#1633: a module's button, unless locked)
                      !(r.setting->locked && r.setting->locked()))
                 r.setting->on_activate(), press[7] = false, changed = true;
-            else if (press[7] && r.setting && (r.setting->kind == menu::Kind::Action || r.setting->kind == menu::Kind::Page))
+            else if (press[7] && !field_row(r) && r.setting && (r.setting->kind == menu::Kind::Action || r.setting->kind == menu::Kind::Page))
                 press[7] = false;   // (#1633: a module's button or page that did nothing (locked): not the bindings page below)
             else if (const FieldRow* f = press[7] ? field_row(r) : nullptr) edit_start(*f->field, f->apply), changed = true;   // (longshot)
             else if (press[7] && !r.value && can_bind()) page = 1, csel = 0, ccol = menu_hit::kCtlPrimary, changed = true, ctl_refresh();

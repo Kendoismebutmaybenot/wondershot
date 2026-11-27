@@ -1,0 +1,14 @@
+{
+  "sha256": "aaca4d6b19d4c0955b3b0a478acbcdb102ec41fae15f60179f8af2c571ffa90e",
+  "size": 6382378,
+  "projects": [
+    {
+      "project": "mbedtls",
+      "revision": "7405a0a8a068e6d84e758578e08eee0559348f46"
+    },
+    {
+      "project": "libdatachannel",
+      "revision": "b8f46d97769e0081b1739d9dd50ccd71dc745d8c"
+    }
+  ]
+}
