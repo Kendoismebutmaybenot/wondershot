@@ -27,7 +27,7 @@ for the PC, so you need your own legally dumped copy of the game. **No game file
   Shadows, Saturation, Highlight saturation) and SDR gamma, all live in the Insert menu. Menus stay SDR. Ported from my
  HDR for the Switch 1 recomp SuperWonders
 - Music and sound effects everywhere, hub worlds included, and movie audio
-- Experimental **two-player online Bellabel Park rooms**, with a room list, optional password, saved names and random player identities. Private relay is the default; direct P2P with TURN fallback is available. See [Online play](#online-play).
+- Experimental **online play in Bellabel Park**, with a room list, optional password, saved names and random player identities. Private relay is the default; direct P2P with TURN fallback is available. See [Online play](#online-play).
 - Players 2-4 locally, per-player controls, controller and keyboard assignment, per-player motion controls
 - Button prompts that follow the controller in use (a stand-in for the system button font)
 - The Poplin house dialogue and the Bellabel Park event softlocks above 60 fps fixed
@@ -38,7 +38,7 @@ for the PC, so you need your own legally dumped copy of the game. **No game file
 
 ## Online play
 
-Online is experimental and currently supports **two PCs: one host and one guest** in Bellabel Park's existing Local Wireless Game Rooms. This is native game networking: each PC runs its own game. No screen streaming, Nintendo account, Epic account, Cloudflare account, invite-code exchange or port forwarding is required.
+Online play is experimental and uses Bellabel Park's existing Local Wireless Game Rooms. This is native game networking: each PC runs its own game. No screen streaming, Nintendo account, Epic account, Cloudflare account, invite-code exchange or port forwarding is required.
 
 1. Update with WondershotBuilder and rebuild the game. Both players need compatible game data, including the Bellabel Park add-on.
 2. Open **Insert ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ Online**, enable Online multiplayer and set an **Online name**. Use a nickname: it is shown to other players in the room list and game.
@@ -50,7 +50,7 @@ Gameplay uses encrypted WebRTC data channels, through Cloudflare TURN in Private
 
 Initial public service capacity is limited. If admission is rate-limited, wait before retrying; do not repeatedly recreate rooms. The service has daily room and credential ceilings and six-hour sessions. After an unexpected exit, stale membership can take about a minute to clear. Recreate the room after session expiry or a prolonged network failure. There is no automatic game-state recovery after a connection is lost.
 
-TURN and direct gameplay have been tested using two instances on one PC, including different frame-rate caps. Native transport tests cover admission rejection and a replacement guest joining the same host room. The game’s numeric password entry, rejection of a wrong PIN, successful entry with the correct PIN, and concurrent rooms were also confirmed in the actual game. Gameplay across separate internet connections and different router/NAT combinations still needs broader testing. Online currently supports two players; the local player 2ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“4 support does not mean four networked PCs are supported.
+TURN and direct gameplay have been tested using two instances on one PC, including different frame-rate caps. Native transport tests cover admission rejection and a replacement guest joining the same host room. The game’s numeric password entry, rejection of a wrong PIN, successful entry with the correct PIN, and concurrent rooms were also confirmed in the actual game. Gameplay across separate internet connections and different router/NAT combinations still needs broader testing. Each room currently supports one host and one guest. Local multiplayer support does not mean four networked PCs are supported.
 
 If reporting a problem, include the Wondershot version, the selected connection mode and the relevant connection-status/error lines. Review logs first and remove names, personal paths, addresses or other information you do not want public. Never upload profiles, access files, session tokens or credentials.
 
