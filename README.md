@@ -24,6 +24,8 @@
 >
 > TURN and direct gameplay have been tested using two instances on one PC, including different frame-rate caps. Native transport tests cover admission rejection and a replacement guest joining the same host room. The game’s numeric invite-code entry, rejection of a wrong PIN, successful entry with the correct PIN, and concurrent rooms were also confirmed in the actual game. Gameplay across separate internet connections and different router/NAT combinations still needs broader testing. Each room currently supports one host and one guest. Local multiplayer support does not mean four networked PCs are supported.
 >
+> Online connection-status logging was introduced in alpha.35 and is only generated when Online multiplayer is enabled and used. Earlier releases did not include these online connection logs.
+>
 > If reporting a problem, include the Wondershot version, the selected connection mode and the relevant connection-status/error lines from `logs/wondershot.log`. Logs and copied bug reports automatically hide your home folder, account name in paths, IP addresses and labelled online names and credentials. Share the log, rather than profiles or other user files.
 
 By default, the Builder reuses `build-workspace` inside the Wondershot install folder, alongside `wonder.exe`. Clear
