@@ -824,13 +824,20 @@ int row_restart_value(const Row& r) {
     const Out o = output_at(*r.value);
     return (int)(o.w << 16 | o.h);
 }
+bool prompts_are_live() {
+    return host && host->prompts_live &&
+        (host->prompts_live() & HOS_PROMPTS_LIVE_ALL) == HOS_PROMPTS_LIVE_ALL;
+}
+bool row_needs_restart(const Row& r) {
+    return r.value == &opts.prompts ? !prompts_are_live() : r.restart;
+}
 void restart_init() {
     static bool done = false;
     if (done) return;
     done = true;
     opts.game_lang = i18n::game_lang_index();   // (language.txt's, the language the game started in)
     for (int i = 0; i < (int)std::size(rows); i++) {
-        restart_slot[i] = rows[i].restart && rows[i].value ? restart_state.add(row_restart_value(rows[i])) : -1;
+        restart_slot[i] = rows[i].value && (rows[i].restart || rows[i].value == &opts.prompts) ? restart_state.add(row_restart_value(rows[i])) : -1;
         if (restart_slot[i] >= 0) restart_names[restart_slot[i]] = rows[i].name;
     }
     mods_slot = restart_state.add(0);   // (hookshot: the Mods tab's order and switches, 0 as the game started)
@@ -840,7 +847,7 @@ int restart_slot_of(const Row& r) { return restart_slot[&r - &rows[0]]; }
 /// A row that takes a restart, changed from what the game started with (a row past menu_restart.h's kMax has no slot: never)
 bool restart_changed(const Row& r) {
     const int slot = restart_slot_of(r);
-    return r.value && r.restart && slot >= 0 && row_restart_value(r) != restart_state.start[slot];
+    return r.value && row_needs_restart(r) && slot >= 0 && row_restart_value(r) != restart_state.start[slot];
 }
 void restart_values(int* now) {
     for (int i = 0; i < (int)std::size(rows); i++)
@@ -1194,8 +1201,7 @@ void save() {
 /// (longshot) The Button prompts row: a new face shows at once where the game has every part of the prompts from
 /// host/prompts.c, nothing to restart for then; else, as the other restart rows, at the next start
 void prompts_at_once(const Row& r) {
-    if (r.value == &opts.prompts && host && host->prompts_live &&
-        (host->prompts_live() & HOS_PROMPTS_LIVE_ALL) == HOS_PROMPTS_LIVE_ALL)
+    if (r.value == &opts.prompts && prompts_are_live())
         restart_state.restart_value(restart_slot_of(r), *r.value);
 }
 
@@ -4386,7 +4392,7 @@ void bridge_fill(int i, MkwVkSetting* out) {
     snprintf(out->name, sizeof out->name, "%s", r.name);
     snprintf(out->tab, sizeof out->tab, "%s", r.tab >= 0 && r.tab <= TAB_PAGE ? tabs[r.tab] : "");
     out->value = *r.value, out->lo = r.lo, out->hi = r.hi, out->step = r.step;
-    out->restart = r.restart, out->fixed = row_fixed(r.value);
+    out->restart = row_needs_restart(r), out->fixed = row_fixed(r.value);
     snprintf(out->text, sizeof out->text, "%s", r.text ? r.text(out->value) : "");
 }
 // (the Upscaler row's questions, asked before menu_mu is taken: row_shown and row_fixed ask upscalers_available(), which

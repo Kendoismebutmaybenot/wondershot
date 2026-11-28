@@ -211,7 +211,6 @@ MENU_MODULE(bindings) {
                       "put each action on.",
               .value = &opts.prompts,
               .lo = 0, .hi = 6,   // (HOS_PROMPT_N)
-              .restart = true,
               .preset_exempt = true,
               .text = MENU_HOOK([](int v) { return std::string(tx_prompts(v)); }),
               .hint = hn_prompts});
