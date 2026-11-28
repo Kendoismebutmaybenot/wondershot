@@ -43,7 +43,8 @@ def march_on_linux(text):
         if path == "/proc/cpuinfo":
             return io.StringIO(text)
         return real_open(path, *args, **kwargs)
-    with mock.patch.object(host_cpu.os, "name", "posix"), mock.patch.object(builtins, "open", fake_open):
+    with mock.patch.object(host_cpu, "native_arm64", return_value=False), \
+            mock.patch.object(host_cpu.os, "name", "posix"), mock.patch.object(builtins, "open", fake_open):
         return host_cpu.host_march()
 
 
@@ -56,6 +57,12 @@ class HostMarch(unittest.TestCase):
     def test_unreadable_cpu_keeps_v3(self):
         self.assertEqual(march_on_linux("processor\t: 0\n"), "x86-64-v3")
 
+    def test_arm64_uses_a_portable_cpu_level(self):
+        with mock.patch.object(host_cpu.platform, "system", return_value="Linux"), \
+                mock.patch.object(host_cpu.platform, "machine", return_value="aarch64"), \
+                mock.patch.object(builtins, "open", side_effect=AssertionError("no x86 CPU flags on arm64")):
+            self.assertEqual(host_cpu.host_march(), "armv8-a")
+
     def test_windows(self):
         class K32:
             def __init__(self, present):
@@ -63,13 +70,14 @@ class HostMarch(unittest.TestCase):
         for present, want in (({38, 40}, "x86-64-v3"), ({38}, "x86-64-v2"), (set(), "x86-64")):
             ctypes = mock.MagicMock()
             ctypes.windll.kernel32 = K32(present)
-            with mock.patch.object(host_cpu.os, "name", "nt"), mock.patch.dict(sys.modules, {"ctypes": ctypes}):
+            with mock.patch.object(host_cpu, "native_arm64", return_value=False), \
+                    mock.patch.object(host_cpu.os, "name", "nt"), mock.patch.dict(sys.modules, {"ctypes": ctypes}):
                 self.assertEqual(host_cpu.host_march(), want, present)
 
     def test_build_and_appimage_use_it(self):
         build = (ROOT / "nx2" / "build.py").read_text(encoding="utf-8")
         self.assertIn("from host_cpu import host_march", build)
-        self.assertIn('MARCH = os.environ.get("RX_MARCH") or host_march()', build)
+        self.assertIn('MARCH = os.environ.get("RX_MARCH") or', build)
         # (the AppImage builds no renderer for a fixed level: a player's build compiles it, for that player's CPU)
         appimage = (ROOT / "scripts" / "linux" / "appimage.sh").read_text(encoding="utf-8")
         self.assertNotIn("RX_VK_ONLY", appimage)
@@ -78,15 +86,16 @@ class HostMarch(unittest.TestCase):
     def test_build_message_names_the_cause(self):
         """'this CPU has no AVX2' only when the CPU chose the level: an RX_MARCH of znver2 (AVX2 and more) said it too"""
         build = (ROOT / "nx2" / "build.py").read_text(encoding="utf-8")
-        start = build.index('MARCH = os.environ.get("RX_MARCH") or host_march()')
+        start = build.index('MARCH = os.environ.get("RX_MARCH") or')
         block = build[start:build.index("CPU = [", start)]
         for env, host, want in (({"RX_MARCH": "znver2"}, "x86-64-v3", "built for znver2 (RX_MARCH)"),
                                 ({"RX_MARCH": "x86-64-v3"}, "x86-64", ""),
                                 ({}, "x86-64-v2", "this CPU has no AVX2"),
-                                ({}, "x86-64-v3", "")):
+                                ({}, "x86-64-v3", ""), ({}, "armv8-a", "")):
             out = io.StringIO()
             with mock.patch.dict(os.environ, env, clear=True), contextlib.redirect_stdout(out):
-                exec(block, {"os": os, "host_march": lambda h=host: h})
+                exec(block, {"os": os, "host_march": lambda h=host: h, "LINUX": True,
+                             "ARM64_LINUX": host == "armv8-a", "native_arm64": lambda: host == "armv8-a"})
             if want:
                 self.assertIn(want, out.getvalue(), env)
             else:
