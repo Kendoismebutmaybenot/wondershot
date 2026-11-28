@@ -153,6 +153,7 @@ enum { HOS_SPRINT_AUTO_KEY = 1, HOS_SPRINT_AUTO_B = 2, HOS_SPRINT_AUTO_PAD = 4, 
    then the keyboard's (nx2/prompt_keys.py: the keys bound, not the pad inputs); the Button prompts row's value is one more (0
    Auto) */
 enum { HOS_PROMPT_SWITCH, HOS_PROMPT_XBOX, HOS_PROMPT_PS4, HOS_PROMPT_PS5, HOS_PROMPT_STEAMDECK, HOS_PROMPT_KEYBOARD, HOS_PROMPT_N };
+enum { HOS_PROMPT_ROW_LAST = HOS_PROMPT_N + 1 };
 /* (longshot) what of the button prompts follows a new face or new controls at once (MkwVkHost.prompts_live, a bit each):
    the textures (the ocarina's notes, the Talk ring's letters, the System page's controller), the layouts (the Talk ring's
    places, the ocarina hint's spacing), the icons in texts; the rest at the next start */

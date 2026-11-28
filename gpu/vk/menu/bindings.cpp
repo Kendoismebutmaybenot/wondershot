@@ -17,7 +17,7 @@
 namespace mkwvk {
 
 #ifndef MENU_LAYOUT_ONLY
-static_assert(HOS_PROMPT_N == 6, "the Button prompts row's top (its .hi below) is HOS_PROMPT_N, vk_api.h");
+static_assert(HOS_PROMPT_ROW_LAST == 7, "the Button prompts row's top is HOS_PROMPT_ROW_LAST, vk_api.h");
 bool can_bind() { return host && host->binding && host->bind && host->pad_raw; }
 // (Wondershot) the set the Controls page is binding. The player the keyboard belongs to has the full controls (HOS_BIND_PAD); the
 // other players' pads are HOS_BIND_PAD_P2.., in player order without that one (host/nn_hid.c role_table)
@@ -94,6 +94,7 @@ const char* tx_pad_layout(int v) {
 }
 #ifndef MENU_LAYOUT_ONLY
 const char* tx_prompts(int v) {
+    if (v == HOS_PROMPT_ROW_LAST) return "Auto (last used)";
     static const char* t[HOS_PROMPT_N + 1] = {"Auto", "Switch", "Xbox", "PlayStation 4", "PlayStation 5", "Steam Deck",
                                               "Keyboard"};
     return t[std::min(std::max(v, 0), (int)HOS_PROMPT_N)];
@@ -159,7 +160,8 @@ MODULE_HINTS(hn_prompts, 0,
              "Those of the first controller, from its type and name (SDL's). With none, the keyboard's (the Switch's "
              "with XInput alone).",
              "The Switch's buttons.", "An Xbox controller's.", "A PlayStation 4 controller's.", "A PlayStation 5 controller's.",
-             "A Steam Deck's.", "The keys and mouse buttons your controls put each action on.")
+             "A Steam Deck's.", "The keys and mouse buttons your controls put each action on.",
+             "Those of the last controller you used.")
 } // namespace
 
 MENU_MODULE(bindings) {
@@ -210,8 +212,7 @@ MENU_MODULE(bindings) {
               .help = "The button icons the game shows, in its texts and menus: those of this controller, for the buttons your controls "
                       "put each action on.",
               .value = &opts.prompts,
-              .lo = 0, .hi = 6,   // (HOS_PROMPT_N)
-              .restart = true,
+              .lo = 0, .hi = 7,   // (HOS_PROMPT_ROW_LAST)
               .preset_exempt = true,
               .text = MENU_HOOK([](int v) { return std::string(tx_prompts(v)); }),
               .hint = hn_prompts});

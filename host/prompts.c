@@ -37,6 +37,7 @@
 int hos_binding(int set, int button, int slot);   /* nn_hid.c */
 int hos_sdl_pads(uint64_t *buttons, int32_t stick[4], int *deck_builtin_input);   /* pad_sdl.c */
 void hos_sdl_pad_first(char *out, size_t cap, int *type, int *sdl);
+int hos_sdl_pad_last(int *type);
 int hos_mods_file(const char *rel, char *out, size_t cap);   /* mods.c */
 extern const char *hos_romfs_dir;   /* nn_fs.c: the game's RomFS folder */
 int hos_xinput_pads(void);   /* nn_hid.c */
@@ -1200,6 +1201,14 @@ volatile int hos_prompts_row = -1;   /* nn_hid.c's live input ("!prompts <row>")
 static int live_face(void) {
     const int choice = hos_prompts_row >= 0 ? hos_prompts_row : rx_option(HOS_OPT_PROMPTS, -1);
     if (choice >= 1 && choice <= HOS_PROMPT_N) return choice - 1;
+    if (choice == HOS_PROMPT_ROW_LAST) {
+        int type;
+        const int sdl = hos_sdl_pad_last(&type);
+        if (sdl) {
+            const int face = face_of_type(sdl, type);
+            return face >= 0 ? face : HOS_PROMPT_XBOX;
+        }
+    }
     if (choice < 0) return live_face_now;   /* (no menu: the start's) */
     char name[128] = "";
     int type = 0, sdl = 0;
@@ -1212,7 +1221,7 @@ static int live_face(void) {
    nx2/wonder_prompt_font.py: the icons drawn as SuperWonders draws them), here: a plain TrueType font at a guest address of
    ours, with Longshot's layout (each face's icons at PAD_BASE + FACE_CODES x face + HOS_PAD_*, each key's at KEY_BASE + its
    code, and each code point Wonder's texts use in a format 4 segment of its own). So the face and the controls are the same
-   idDelta writes as OoT's, made in the game's own copy whenever they change (hos_prompts_live). */
+   idDelta writes as OoT's: in the served font before startup, then in a private copy for the host lookup. */
 /* Wonder's code points that show a Switch button (nx2/wonder_prompt_font.py WONDER "sw"), and the button: the filled and the
    outlined A B X Y L R ZL ZR + -, the d-pad's ways, the face button at the right, bottom, top, left (A B X Y on a Switch) */
 static const uint16_t wonder_sw_code[] = {0xE0E0, 0xE0E1, 0xE0E2, 0xE0E3, 0xE0E4, 0xE0E5, 0xE0E6, 0xE0E7, 0xE0EF, 0xE0F0,
@@ -1227,10 +1236,15 @@ static const unsigned char wonder_sw_button[] = {
 /* the sticks (WONDER "pad"): the face's stick, whatever is bound (moving a stick is no binding) */
 static const uint16_t wonder_pad_code[] = {0xE101, 0xE102, 0xE0C1, 0xE0C2};
 static const unsigned char wonder_pad[] = {HOS_PAD_LSTICK, HOS_PAD_RSTICK, HOS_PAD_LSTICK, HOS_PAD_RSTICK};
-static struct { uint64_t at, n; int face, bind[BINDS]; } ext = {0, 0, -1, {0}};
+#include "wonder_glyphs.h"
+static struct { uint64_t at, n; int face, bind[BINDS], valid; } ext = { .face = -1 };
+static SRWLOCK wonder_glyph_lock = SRWLOCK_INIT;
+static WonderGlyphs wonder_glyphs[2];
+static WonderGlyphs *wonder_glyphs_active;
+static int wonder_glyphs_live;
 
 /* the face and the controls into a format 4 subtable of the font (as cmap4_bind); how many buttons bound */
-static int wonder_cmap4_bind(uint8_t *st, size_t n, int face) {
+static int wonder_cmap4_bind(uint8_t *st, size_t n, int face, const int *bind) {
     const unsigned segs = rd16(st + 6) / 2;
     if (14 + 8 * (size_t)segs + 2 > n) return 0;
     const unsigned base = PAD_BASE + FACE_CODES * (unsigned)face;
@@ -1238,13 +1252,13 @@ static int wonder_cmap4_bind(uint8_t *st, size_t n, int face) {
     int done = 0;
     for (size_t i = 0; i < sizeof wonder_sw_code / sizeof *wonder_sw_code; i++) {
         const int b = wonder_sw_button[i];
-        const int k = keys ? first_key(b) : 0;
+        const int k = keys ? bind[HOS_SW_N + b] : 0;
         const unsigned kid = k ? cmap4_glyph(st, n, KEY_BASE + (unsigned)k) : 0;
         if (kid && cmap4_point(st, segs, wonder_sw_code[i], kid)) {
             done += i < 14;
             continue;
         }
-        const int pad = hos_binding(HOS_BIND_PAD, b, 0), bound = pad >= 0 && pad < HOS_PAD_ART_N;   /* (a paddle: the default's) */
+        const int pad = bind[b], bound = pad >= 0 && pad < HOS_PAD_ART_N;   /* (a paddle: the default's) */
         const unsigned gid = cmap4_glyph(st, n, base + (unsigned)(bound ? pad : switch_pad[b]));
         if (gid && cmap4_point(st, segs, wonder_sw_code[i], gid)) done += bound && !keys && i < 14;
     }
@@ -1256,7 +1270,7 @@ static int wonder_cmap4_bind(uint8_t *st, size_t n, int face) {
 }
 
 /* the font's format 4 subtables bound (as bind_font, on a plain TrueType font); -1 none found */
-static int wonder_bind(uint8_t *ttf, size_t n, int face) {
+static int wonder_bind(uint8_t *ttf, size_t n, int face, const int *bind, WonderGlyphs *out) {
     if (n < 12) return -1;
     const unsigned tables = rd16(ttf + 4);
     for (unsigned t = 0; t < tables && 12 + 16 * (size_t)(t + 1) <= n; t++) {
@@ -1270,7 +1284,10 @@ static int wonder_bind(uint8_t *ttf, size_t n, int face) {
             const uint32_t so = rd32(cmap + 4 + 8 * s + 4);
             if (so > len || len - so < 14 || rd16(cmap + so) != 4) continue;
             const unsigned sl = rd16(cmap + so + 2);
-            done = wonder_cmap4_bind(cmap + so, sl <= len - so ? sl : len - so, face);   /* (platforms 0 and 3 share one: twice) */
+            done = wonder_cmap4_bind(cmap + so, sl <= len - so ? sl : len - so, face, bind);
+            if (out)
+                for (unsigned code = WONDER_GLYPH_FIRST; code <= WONDER_GLYPH_LAST; code++)
+                    out->glyph[code - WONDER_GLYPH_FIRST] = (uint16_t)cmap4_glyph(cmap + so, sl <= len - so ? sl : len - so, code);
         }
         return done;
     }
@@ -1279,7 +1296,7 @@ static int wonder_bind(uint8_t *ttf, size_t n, int face) {
 
 /* nn_applet.c, for the built-in font type 5: the font at a guest address (the game keeps reading it there), bound to the face
    and the controls; 0 without prompts/wonder_ext.ttf (the game folder's: nx2/wonder_prompt_font.py) */
-int hos_prompts_ext_font(uint64_t *addr, uint64_t *size) {
+static int wonder_ext_load(uint64_t *addr, uint64_t *size) {
     if (ext.at) return *addr = ext.at, *size = ext.n, 1;
     char dir[MAX_PATH], path[MAX_PATH];
     if (!game_dir(dir, sizeof dir)) return 0;
@@ -1298,32 +1315,80 @@ int hos_prompts_ext_font(uint64_t *addr, uint64_t *size) {
     if (!ok) return 0;
     wonder_ext_font = 1;
     const int face = choose_face(dir);
-    const int bound = wonder_bind((uint8_t *)GP(a), (size_t)n, face);
+    current_binds(ext.bind);
+    const int bound = wonder_bind((uint8_t *)GP(a), (size_t)n, face, ext.bind, NULL);
+    ext.valid = bound >= 0;
     if (bound < 0) {
         hos_log("prompts: %s has no format 4 cmap: the icons as built", path);
     }
-    current_binds(ext.bind);
     ext.face = live_face_now = face;
     memcpy(live_bind_now, ext.bind, sizeof live_bind_now);
     ext.n = (uint64_t)n;
-    ext.at = a;
+    __atomic_store_n(&ext.at, a, __ATOMIC_RELEASE);
     hos_log("prompts: the extension font: %s icons, %d buttons on these %s (%ld bytes at %#llx)", faces[face], bound,
             face == HOS_PROMPT_KEYBOARD ? "keys" : "pad's controls", n, (unsigned long long)a);
     *addr = a, *size = (uint64_t)n;
     return 1;
 }
 
-/* hos_prompts_live for Wonder: a new face or new controls written into the game's copy of the font */
-static void wonder_live(void) {
+int hos_prompts_ext_font(uint64_t *addr, uint64_t *size) {
+    AcquireSRWLockExclusive(&wonder_glyph_lock);
+    const int loaded = wonder_ext_load(addr, size);
+    ReleaseSRWLockExclusive(&wonder_glyph_lock);
+    return loaded;
+}
+
+/* Wonder FontMgr::Update, after reading +0x3d (the atlas worker is in flight). Keep the guest font immutable after
+   it is served. Build the complete map in a private copy, then publish it before the game's own atlas reset. */
+void hos_wonder_glyph_frame(Ctx *c) {
+    static uint64_t previous_mgr;
+    static int64_t last;
+    const uint64_t mgr = c->x[0];
+    if (c->x[8] || !__atomic_load_n(&ext.at, __ATOMIC_ACQUIRE) || !hos_guest_range(mgr, 0x40)) return;
+    AcquireSRWLockExclusive(&wonder_glyph_lock);
+    if (!ext.valid) goto done;
+    const int64_t now = hos_now_ns();
+    if (mgr == previous_mgr && now - last < 16000000) goto done;
+    previous_mgr = mgr;
+    last = now;
+    __atomic_store_n(&wonder_glyphs_live, 1, __ATOMIC_RELEASE);
     int bind[BINDS];
     current_binds(bind);
     const int face = live_face();
-    if (face == ext.face && !memcmp(bind, ext.bind, sizeof bind)) return;
-    const int bound = wonder_bind((uint8_t *)GP(ext.at), (size_t)ext.n, face);
-    ext.face = live_face_now = face;
+    if (face == ext.face && !memcmp(bind, ext.bind, sizeof bind)) goto done;
+    uint8_t *copy = malloc((size_t)ext.n);
+    if (!copy) goto done;
+    memcpy(copy, GP(ext.at), (size_t)ext.n);
+    WonderGlyphs *active = wonder_glyphs_load(&wonder_glyphs_active);
+    WonderGlyphs *next = &wonder_glyphs[active == &wonder_glyphs[0]];
+    next->font = ext.at;
+    const int bound = wonder_bind(copy, (size_t)ext.n, face, bind, next);
+    free(copy);
+    if (bound < 0) goto done;
+    wonder_glyphs_publish(&wonder_glyphs_active, next);
+    ext.face = face;
     memcpy(ext.bind, bind, sizeof bind);
-    memcpy(live_bind_now, bind, sizeof live_bind_now);
-    hos_log("prompts: now the %s icons in texts, %d buttons on these controls", faces[face], bound);
+    /* Complete() does not check references when it drains the erase list. Only the game's own reset is used. */
+    *(uint8_t *)GP(mgr + 0x3e) = 1;
+    hos_log("prompts: now the %s icons in texts, %d buttons on these controls (texture cache reset)", faces[face], bound);
+done:
+    ReleaseSRWLockExclusive(&wonder_glyph_lock);
+}
+
+/* iType has selected a font and set state+0x30 on either cache path. sfnt+0x10 is the memory-font source address
+   (FSS_set_font 0x840B56E0). Change only the result register, never the guest's cmap or its cmap cache. */
+void hos_wonder_glyph_result(Ctx *c) {
+    const uint32_t code = (uint32_t)c->x[21];
+    if (!c->x[0] || !wonder_glyph_code(code) || !wonder_glyphs_load(&wonder_glyphs_active)) return;
+    const uint64_t state = c->x[19];
+    if (!hos_guest_range(state, 0x38)) return;
+    const uint64_t sfnt = G64(state + 0x30);
+    if (!sfnt || !hos_guest_range(sfnt, 0x18)) return;
+    const uint64_t font = G64(sfnt + 0x10);
+    /* The lock pins the chosen slot until this reader is done, even if two frames publish in the meantime. */
+    AcquireSRWLockShared(&wonder_glyph_lock);
+    c->x[0] = wonder_glyph_id(wonder_glyphs_load(&wonder_glyphs_active), font, code, (uint16_t)c->x[0]);
+    ReleaseSRWLockShared(&wonder_glyph_lock);
 }
 
 /* nn_hid.c, as the game reads its controller (every frame; looked at every 100 ms): the face or the controls changed, or a
@@ -1332,15 +1397,7 @@ int hos_prompts_live_parts(void);
 void hos_prompts_live(void) {
     static volatile LONG busy;
     static int64_t last;
-    if (ext.at) {   /* (Wondershot: the extension font alone) */
-        const int64_t now = hos_now_ns();
-        if (now - last >= 100000000 && !InterlockedCompareExchange(&busy, 1, 0)) {
-            last = now;
-            wonder_live();
-            InterlockedExchange(&busy, 0);
-        }
-        return;
-    }
+    if (__atomic_load_n(&ext.at, __ATOMIC_ACQUIRE)) return;   /* (Wonder applies changes at its FontMgr frame) */
     const int pool = __atomic_load_n(&tex.l.base, __ATOMIC_ACQUIRE) != 0;   /* (hos_prompts_pool: lo and hi set before) */
     if (live_face_now < 0 || (!pool && !lay_n && !font.at) || InterlockedCompareExchange(&busy, 1, 0)) return;
     const int64_t now = hos_now_ns();
@@ -1388,7 +1445,8 @@ static volatile LONG romfs_state[3];
 /* what the Insert menu's Button prompts row can change at once (vk_api.h HOS_PROMPTS_LIVE_*): the parts the game has loaded
    from files served here, found, and the ones none was served for (a restart changes them no more); 0 with none found */
 int hos_prompts_live_parts(void) {
-    if (ext.at) return HOS_PROMPTS_LIVE_ALL;   /* (Wondershot: every icon is in the extension font, re-pointed at once) */
+    if (__atomic_load_n(&ext.at, __ATOMIC_ACQUIRE))
+        return __atomic_load_n(&wonder_glyphs_live, __ATOMIC_ACQUIRE) ? HOS_PROMPTS_LIVE_ALL : 0;
     const int found = (tex.l.base ? HOS_PROMPTS_LIVE_TEXTURES : 0) | (lay.base ? HOS_PROMPTS_LIVE_LAYOUTS : 0) |
                       (font.at ? HOS_PROMPTS_LIVE_TEXTS : 0);
     if (!found) return 0;
@@ -1401,6 +1459,12 @@ int hos_prompts_live_parts(void) {
 int hos_prompts_face(void) {
     char dir[MAX_PATH];
     int face;
+    if (__atomic_load_n(&ext.at, __ATOMIC_ACQUIRE)) {
+        AcquireSRWLockShared(&wonder_glyph_lock);
+        face = ext.face;
+        ReleaseSRWLockShared(&wonder_glyph_lock);
+        return face;
+    }
     if (live_face_now >= 0) return live_face_now;
     return setup_state >= 2 && setup(dir, sizeof dir, &face) ? face : -1;
 }

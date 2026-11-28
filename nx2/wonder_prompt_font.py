@@ -431,7 +431,7 @@ def build(base_path):
     from fontTools.ttLib import TTFont
     from fontTools.ttLib.tables.DefaultTable import DefaultTable
 
-    font = TTFont(base_path)
+    font = TTFont(base_path, recalcTimestamp=False)
     if "glyf" not in font:
         sys.exit("base font must have TrueType (glyf) outlines")
     b = Builder(font)
@@ -483,7 +483,7 @@ def build(base_path):
     opts.layout_features = []
     opts.drop_tables += ["GSUB", "GPOS", "GDEF", "kern", "morx", "feat", "prop", "BASE", "JSTF", "MATH", "STAT", "fvar", "gvar"]
     sub = subset.Subsetter(opts)
-    small = TTFont(io.BytesIO(raw.getvalue()))
+    small = TTFont(io.BytesIO(raw.getvalue()), recalcTimestamp=False)
     sub.populate(glyphs=sorted(set(placed.values()) | {"space"}))
     sub.subset(small)
     gid = {n: i for i, n in enumerate(small.getGlyphOrder())}
@@ -492,8 +492,17 @@ def build(base_path):
     t = DefaultTable("cmap")
     t.data = cmap4(mapping, set(WONDER))
     small["cmap"] = t
-    small["name"].setName("Wondershot Prompts", 1, 3, 1, 0x409)
-    small["name"].setName("Wondershot Prompts", 4, 3, 1, 0x409)
+    # Rename the font on every platform; keep copyright and license records intact.
+    names = small["name"]
+    identity = {1: "Wondershot Prompts", 2: "Regular", 3: "Wondershot Prompts",
+                4: "Wondershot Prompts", 6: "WondershotPrompts", 16: "Wondershot Prompts", 17: "Regular",
+                18: "Wondershot Prompts", 20: "WondershotPrompts", 21: "Wondershot Prompts", 22: "Regular",
+                25: "WondershotPrompts"}
+    for record in names.names:
+        if record.nameID in identity:
+            record.string = identity[record.nameID].encode(record.getEncoding())
+    for name_id in (1, 2, 3, 4, 6):
+        names.setName(identity[name_id], name_id, 3, 1, 0x409)
     out = io.BytesIO()
     small.save(out)
     return out.getvalue(), placed

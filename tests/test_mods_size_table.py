@@ -264,7 +264,10 @@ def routing_checks(cc, tmp, zstandard, host):
     (src / "hos.h").write_text("#pragma once\n#include <stddef.h>\n#include <stdint.h>\nvoid hos_log(const char *f, ...);\n"
                                "#define HOS_WRITTEN(p, n) ((void)0)\n"
                                "static inline void *hos_guest_range(uint64_t a, uint64_t n) { (void)a; (void)n; return NULL; }\n"
-                               "int hos_regions(uint64_t (*out)[2], int cap);\nint64_t hos_now_ns(void);\n")
+                               "int hos_regions(uint64_t (*out)[2], int cap);\nint64_t hos_now_ns(void);\n"
+                               "typedef struct { uint64_t x[32]; } Ctx;\n"
+                               "uint64_t hos_sys_alloc(uint64_t size, uint64_t align);\n"
+                               "void *GP(uint64_t a);\n#define G64(a) (*(uint64_t *)GP(a))\n")
     pieces = [block(posix, m) for m in POSIX_PIECES]
     pieces.insert(1, "static BOOL fail_errno(void) { last_error = error_of(errno); return FALSE; }\n"
                      "enum { H_THREAD = 0x48540001, H_EVENT, H_SEMA, H_TIMER, H_FILE, H_FIND };\n"
@@ -296,6 +299,10 @@ DWORD GetModuleFileNameA(HMODULE m, LPSTR out, DWORD cap) { (void)m; return (DWO
 void hos_log(const char *f, ...) { va_list ap; va_start(ap, f); printf("log: "); vprintf(f, ap); printf("\n"); va_end(ap); }
 int hos_binding(int set, int button, int slot) { (void)set; (void)button; (void)slot; return -1; }
 int hos_sdl_pads(uint64_t *buttons, int32_t stick[4], int *deck_builtin_input) { (void)buttons; (void)stick; (void)deck_builtin_input; return 0; }
+/* This fixture serves files. It never enters the guest font hooks. */
+uint64_t hos_sys_alloc(uint64_t size, uint64_t align) { (void)size; (void)align; abort(); }
+void *GP(uint64_t a) { (void)a; abort(); }
+int hos_sdl_pad_last(int *type) { *type = 0; return 0; }
 int hos_xinput_pads(void) { return 0; } /* no controllers in this routing fixture */
 void hos_sdl_pad_first(char *out, size_t cap, int *type, int *sdl) { if (cap) *out = 0; if (type) *type = 0; if (sdl) *sdl = 0; }
 int hos_regions(uint64_t (*out)[2], int cap) { (void)out; (void)cap; return 0; }
