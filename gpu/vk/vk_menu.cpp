@@ -790,8 +790,11 @@ void outputs_sync() {
         if (r.value == &opts.output_res) r.hi = last_choice();
         if (r.value == &opts.ultrawide) r.hi = aspect_last();
     }
-    ultrawide_read = std::clamp(opts.ultrawide, 0, 1);
-    opts.ultrawide = aspect_started = aspect_of_choice(opts.output_res, ultrawide_read);
+    ultrawide_read = std::clamp(opts.ultrawide, 0, (int)HOS_WONDER_WINDOW_ASPECT);
+    const int window = aspect_window_value();
+    const char* force_window = getenv("HOS_WINDOW_ASPECT");
+    const bool follow = window >= 0 && (force_window ? !env_value_off(force_window) : ultrawide_read == HOS_WONDER_WINDOW_ASPECT);
+    opts.ultrawide = aspect_started = follow ? window : aspect_of_choice(opts.output_res, ultrawide_read);
     output_started = opts.output_res;
     std::string list;
     for (const dm::Shape& s : shapes) list += (list.empty() ? "" : ", ") + s.name;
@@ -1057,9 +1060,12 @@ void save() {
                 fprintf(f, "%s=%ux%u\n", ini_key(r), o.w, o.h);
             } else if (r.value == &opts.ultrawide) {   // (the Aspect ratio: 1 the monitor's own shape, else 0; output_res holds the rest)
                 // (a run whose Output resolution HOS_OUTPUT_RES holds took the row from the environment's size: the player's own
-                // ultrawide= is kept, unless the row was changed in the menu)
+                // ultrawide= is kept, unless the row was changed in the menu. 2 stores Window, not its menu index.)
                 const int v = saved_value(r.value);
-                fprintf(f, "%s=%d\n", ini_key(r), env_holds(&opts.output_res) && v == aspect_started ? ultrawide_read : aspect_follows_host(v) ? 1 : 0);
+                const bool unchanged = v == aspect_started && (env_holds(&opts.output_res) || getenv("HOS_WINDOW_ASPECT"));
+                const int setting = unchanged ? ultrawide_read :
+                    v >= 0 && v == aspect_window_value() ? HOS_WONDER_WINDOW_ASPECT : aspect_follows_host(v) ? 1 : 0;
+                fprintf(f, "%s=%d\n", ini_key(r), setting);
             } else if (r.value && r.value != &opts.game_lang && r.value != &output_pick && r.value != &monitor_pick &&
                        r.value != &opts.ctl_player) { // Device choices are saved by ID below. (The Controls page's player: not saved)
                 fprintf(f, "%s=%d\n", ini_key(r), saved_value(r.value));
@@ -3950,7 +3956,10 @@ void menu_init() {
             for (Row& r : rows) {
                 if (!r.value || r.value == &opts.game_lang || strcmp(line, ini_key(r))) continue;
                 const int v = atoi(eq + 1);
-                *r.value = r.value == &opts.output_res ? parse_output(eq + 1) : std::min(std::max(v, r.lo), r.hi);
+                if (r.value == &opts.output_res) *r.value = parse_output(eq + 1);
+                else if (r.value == &opts.ultrawide && aspect_window_value() >= 0 && v == HOS_WONDER_WINDOW_ASPECT)
+                    *r.value = HOS_WONDER_WINDOW_ASPECT;
+                else *r.value = std::clamp(v, r.lo, r.hi);
             }
             if (!strncmp(line, "toggle_", 7))
                 for (int i = 0; i < HOS_KEY_N; i++)

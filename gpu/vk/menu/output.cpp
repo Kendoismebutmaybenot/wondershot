@@ -204,16 +204,27 @@ std::string monitor_shape() {
 }
 /// The Aspect ratio row's values: output_shapes' places, the monitor's own marked; where monitor_shape is not known, one more
 /// after them, Monitor's shape (ultrawide=1 with a 16:9 size, as host/hos_main.c takes the screen's shape), as on main
-int aspect_monitor_value() { return monitor_shape().empty() ? (int)output_shapes().size() : -1; }
-int aspect_last() { return std::max(0, (int)output_shapes().size() - 1); }
+int aspect_window_value() {
+#if defined(__linux__)
+    return (int)output_shapes().size();
+#else
+    return -1;
+#endif
+}
+int aspect_monitor_value() { return monitor_shape().empty() && aspect_window_value() < 0 ? (int)output_shapes().size() : -1; }
+int aspect_last() {
+    return std::max(aspect_window_value(), (int)output_shapes().size() - 1);
+}
 /// The shape the Aspect ratio row's value v names (Monitor's shape where the monitor's is not known: 16:9 sizes)
 std::string aspect_shape(int v) {
+    if (v >= 0 && v == aspect_window_value()) return "Window";
     const std::vector<dm::Shape>& shapes = output_shapes();
     if (shapes.empty() || v == aspect_monitor_value()) return std::string("16:9");
     return shapes[std::clamp(v, 0, (int)shapes.size() - 1)].name;
 }
 /// The row's value for shape name (16:9's when it is not one of them)
 int aspect_index(const std::string& name) {
+    if (name == "Window" && aspect_window_value() >= 0) return aspect_window_value();
     const std::vector<dm::Shape>& shapes = output_shapes();
     for (int i = 0; i < (int)shapes.size(); i++)
         if (shapes[i].name == name) return i;
@@ -319,6 +330,7 @@ const char* tx_output_res(int v) {
 /// The Aspect ratio row (ultrawide=): the shapes of the sizes offered, narrowest first, the monitor's own named so
 const char* tx_ultrawide(int v) {
     static char b[48];
+    if (v >= 0 && v == aspect_window_value()) return "Window";
     if (v == aspect_monitor_value()) return "Monitor's shape";   // (the monitor's own not known: as on main)
     // (printed from a format, so menu_i18n.h's "%s (monitor's)" translates it: vk_menu_i18n.cpp match_format)
     if (aspect_is_monitors(v)) snprintf(b, sizeof b, "%s (monitor's)", aspect_shape(v).c_str());
@@ -331,8 +343,10 @@ const char* hn_ultrawide(int v, int variant) {
         "Matches your monitor's shape.",
         "The game's own shape.",
         "Wider than 16:9: the camera sees more at the sides. The HUD and menus keep the middle 16:9.",
-        "The 4:3 camera shows less at the sides. The HUD fits the available width."};
+        "The 4:3 camera shows less at the sides. The HUD fits the available width.",
+        "Fills the startup window. Tall windows show more above and below. Restart after resizing."};
     if (variant >= 0) return variant < (int)std::size(t) ? t[variant] : nullptr;
+    if (v >= 0 && v == aspect_window_value()) return t[4];
     if (aspect_is_monitors(v)) return t[0];
     const std::vector<dm::Shape> shapes = output_shapes();
     const double r = shapes.empty() ? 16.0 / 9.0 : shapes[std::clamp(v, 0, (int)shapes.size() - 1)].r, game = 16.0 / 9.0;
@@ -371,7 +385,7 @@ MENU_MODULE(output) {
     menu::tab("graphics")
         .row({.key = "ultrawide",
               .label = "Aspect ratio",
-              .help = "Choose 4:3, 16:9, 21:9 or 32:9. The Output resolution lists sizes for the selected shape. Applies after a restart.",
+              .help = "Choose a fixed shape or Window (Linux). Window follows the starting drawable. Applies after a restart.",
               .value = &opts.ultrawide,
               .lo = 0, .hi = 1,
               .restart = true,

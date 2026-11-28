@@ -143,6 +143,7 @@ SW(HOS_OOT_TELEPORT_STARTER, kill, bool, "the teleport's event is run with its s
 SW(HOS_OOT_TRACE_SAVES, diag, bool, "off", "Logs each save request (reason, mode, caller) and each suppressed transition autosave.")
 SW(HOS_OPTIONS_FILE, diag, string, "--user's folder, the launcher's folder, else beside the game", "Names the settings file (longshot_options.ini) to use, so a scripted run leaves the player's alone.")
 SW(HOS_OS_YIELD, kill, bool, "off: nn::os::YieldThread gives up the virtual core only (no SwitchToThread)", "=1: the game's yields give up the processor too, as before; HOS_AB may flip it.")
+SW(HOS_WINDOW_ASPECT, player, bool, "the saved Aspect ratio", "Fills the startup window with more world instead of stretching (Wondershot on Linux).")
 SW(HOS_OUTPUT_RES, player, string, "the options file's output_res, else 2560x1440 or the screen's size", "Sets the output resolution (WxH) for a run, over the menu's Output resolution row.")
 SW(HOS_PAGES_LIMIT, attempt, bool, "off: mapped pages are only counted and logged", "=1 makes AllocateMemoryPages fail past the console's total memory, as on the console.")
 SW(HOS_PGO, diag, string, "unset: no counter dumps", "In an RX_PGO=gen build, <file>.reset clears and <file>.dump writes the profile counters; also turns the crash window off.")

@@ -1940,6 +1940,18 @@ float hos_aspect_ratio = 0;   /* (the window's default shape: host/display.c) */
 volatile uint64_t hos_wide_out, hos_wide_scene;
 volatile float hos_wide_ratio, hos_wide_squeeze, hos_wide_margin;
 uint64_t hos_wonder_wide_size;
+static float wonder_tall_scale = 1.0f;
+
+void hos_wonder_tall_span(Ctx *c) {
+    if (wonder_tall_scale == 1.0f) return;
+    float span;
+    memcpy(&span, c->vreg[1], sizeof span);
+    span *= wonder_tall_scale;
+    memcpy(c->vreg[1], &span, sizeof span);
+    static int logged;
+    if (!__atomic_exchange_n(&logged, 1, __ATOMIC_RELAXED))
+        hos_log("boot: Wonder orthographic span widened vertically by %.4f", (double)wonder_tall_scale);
+}
 
 void hos_wonder_wide_display(Ctx *c, uint64_t args) {
     if (!hos_wonder_wide_size || recomp_load32(c, args + 20) != 3840 || recomp_load32(c, args + 24) != 2160)
@@ -1955,26 +1967,39 @@ static void wonder_wide_init(size_t image_size, unsigned width, unsigned height)
     /* Read by the default perspective camera and the routine that computes
        the horizontal bounds of the orthographic gameplay camera. */
     const size_t aspect_offset = 0x2c71b14;
-    int hos_output_handheld(void);
-    if (hos_output_handheld() || !hos_output_size_valid(width, height) || image_size < aspect_offset + sizeof(float)) return;
-    int hos_ini_option(const char *, int);
-    void hos_monitor_prepare(void);
-    int hos_monitor_screen_size(int *, int *);
-    int sw = 0, sh = 0;
-    hos_monitor_prepare();
-    if (!hos_monitor_screen_size(&sw, &sh)) {
-        sw = GetSystemMetrics(SM_CXSCREEN); sh = GetSystemMetrics(SM_CYSCREEN);
+    int follow_window = 0;
+#if defined(__linux__) && !defined(A64_MEM_ZERO)
+    uint64_t hos_wonder_window_pixels(void);
+    const uint64_t pixels = hos_wonder_window_pixels();
+    if (pixels) {
+        width = (uint32_t)pixels;
+        height = (uint32_t)(pixels >> 32);
+        follow_window = 1;
     }
-    hos_wonder_output_size(&width, &height, hos_ini_option("ultrawide", 1),
-                           sw > 0 ? (unsigned)sw : 0, sh > 0 ? (unsigned)sh : 0);
+#endif
+    if (!follow_window) {
+        int hos_output_handheld(void);
+        if (hos_output_handheld() || !hos_output_size_valid(width, height) || image_size < aspect_offset + sizeof(float)) return;
+        int hos_ini_option(const char *, int);
+        void hos_monitor_prepare(void);
+        int hos_monitor_screen_size(int *, int *);
+        int sw = 0, sh = 0;
+        hos_monitor_prepare();
+        if (!hos_monitor_screen_size(&sw, &sh)) {
+            sw = GetSystemMetrics(SM_CXSCREEN); sh = GetSystemMetrics(SM_CYSCREEN);
+        }
+        hos_wonder_output_size(&width, &height, hos_ini_option("ultrawide", 1),
+                               sw > 0 ? (unsigned)sw : 0, sh > 0 ? (unsigned)sh : 0);
+    } else if (!hos_output_size_valid(width, height) || image_size < aspect_offset + sizeof(float)) return;
 
     uint8_t *const ratio_address = A64_MEM + IMAGE_BASE + aspect_offset;
     uint32_t original;
     memcpy(&original, ratio_address, sizeof original);
     if (original != 0x3fe38e3b) return;
 
-    hos_wonder_wide_fit(&width, &height);
+    if (follow_window) hos_wonder_wide_fit(&width, &height);
     const float ratio = (float)width / height;
+    if (follow_window) wonder_tall_scale = hos_wonder_vertical_span(width, height);
     memcpy(ratio_address, &ratio, sizeof ratio);
     hos_wonder_wide_size = (uint64_t)height << 32 | width;
     hos_wide_out = hos_wonder_wide_size;

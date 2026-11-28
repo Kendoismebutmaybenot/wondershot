@@ -43,6 +43,7 @@ const std::vector<display_modes::Shape>& output_shapes();
 int output_shape_of(int v);
 std::string monitor_shape();
 int aspect_monitor_value();
+int aspect_window_value();
 int aspect_last();
 std::string aspect_shape(int v);
 int aspect_index(const std::string& name);

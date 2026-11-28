@@ -3,6 +3,8 @@
 BUILD_ID = "ec47e6f8846d2a7b6892e2682845c7255f7117ae"
 SIZE = "extern uint64_t hos_wonder_wide_size; const uint64_t wide = hos_wonder_wide_size;"
 SITES = (
+    # Gameplay orthographic span before constructing top/bottom and left/right.
+    (0x8043CD40, 0x1E210801, "extern void hos_wonder_tall_span(Ctx *); hos_wonder_tall_span(c);"),
     # The framework's startup arguments, before the constructor copies them.
     (0x80B6A528, 0xD102A3A1, "extern void hos_wonder_wide_display(Ctx *, uint64_t); "
      "hos_wonder_wide_display(c, c->x[1]);"),
