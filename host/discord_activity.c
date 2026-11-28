@@ -1,6 +1,6 @@
 /* (longshot) What the Discord status says (discord_activity.h).
 
-   Discord shows the application's name in bold ("Playing Longshot": the Discord application of discord_app_id=, its
+   Discord shows the application's name in bold ("Playing Wondershot": the Discord application of discord_app_id=, its
    name and its art; host/discord_rpc.c), and under it the status's two lines. Those are the player's to write in
    longshot_options.ini (the menu's saves keep these lines):
      discord_text=        the two lines, a template (discord_activity.h); default:
@@ -9,11 +9,11 @@
                             {!location|{version} {build}{!version| {commit}}}   (one line)
                           so in a map "Kakariko Village - Adult" over "❤️ 2.75/3 · 🕷️ 12 · 💗 2", the version on the picture's
                           hover text; with no location (the title screen) the version, "v3.0.0 RC7": the bold name above
-                          already says Longshot. The commit only on a build with no version number (a nightly, "N486
+                          already says Wondershot. The commit only on a build with no version number (a nightly, "N486
                           09a20cd6"; a checkout with no tag), where it is what tells two builds apart
      discord_image=       the large picture: an art asset's key of the Discord application, or an https:// link to a
-                          picture (default: longshot, the application's art)
-     discord_image_text=  the picture's hover text, a template (default: Longshot {version} {build}{!version| {commit}})
+                          picture (default: wondershot, the application's art)
+     discord_image_text=  the picture's hover text, a template (default: Wondershot {version} {build}{!version| {commit}})
    An empty part takes with it the brackets around it, its extra space and a dash it leaves at a line's end ("Longshot
    {version} {build} [{commit}]" on a release: "Longshot v3.0.0"). Discord takes 2 to 128 letters a line; a shorter line
    is left out, a longer one cut. (Not discord_status=: that is the Insert menu's own row, Discord status on or off.) */
@@ -28,8 +28,8 @@
 void discord_settings_default(DiscordSettings *s) {
     memset(s, 0, sizeof *s);
     snprintf(s->status, sizeof s->status, "%s", DEFAULT_STATUS);
-    snprintf(s->image, sizeof s->image, "longshot");
-    snprintf(s->image_text, sizeof s->image_text, "Longshot {version} {build}{!version| {commit}}");
+    snprintf(s->image, sizeof s->image, "wondershot");
+    snprintf(s->image_text, sizeof s->image_text, "Wondershot {version} {build}{!version| {commit}}");
 }
 
 int discord_settings_line(DiscordSettings *s, const char *line) {
@@ -245,7 +245,7 @@ size_t discord_activity_json(const DiscordSettings *s, const DiscordFields *f, u
     char details[160], state[160], image_text[160], text_two[8], head[160];
     discord_lines(s->status, f, details, sizeof details, state, sizeof state);
     discord_lines(s->image_text, f, image_text, sizeof image_text, text_two, sizeof text_two);
-    const char *image = valid_image(s->image) ? s->image : "longshot";
+    const char *image = valid_image(s->image) ? s->image : "wondershot";
     size_t o = 0;
     snprintf(head, sizeof head, "{\"cmd\":\"SET_ACTIVITY\",\"nonce\":\"%u\",\"args\":{\"pid\":%lu,\"activity\":{", nonce, pid);
     int ok = put(out, cap, &o, head);

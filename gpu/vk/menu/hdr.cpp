@@ -28,7 +28,7 @@ MENU_MODULE(hdr) {
         .row({.key = "hdr", .label = "HDR",
               .help = "HDR10 out on an HDR display (Windows: Use HDR on in the display settings): the game's highlights past "
                       "its SDR white, RenoDX style. Turning it on or off applies after a restart.",
-              .value = &opts.hdr, .lo = 0, .hi = 2, .preset_exempt = true, .text = [](int v) { return std::string(tx_hdr(v)); },
+              .value = &opts.hdr, .lo = 0, .hi = 2, .restart = true, .preset_exempt = true, .text = [](int v) { return std::string(tx_hdr(v)); },
               .step_fn = [](int v, int) { return v ? 0 : 2; }})
         .row({.key = "hdr_paper_white", .label = "HDR paper white",
               .help = "How bright the picture's white (and the UI) is. Around 200 for a normal room; higher in a bright one.",

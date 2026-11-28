@@ -5397,19 +5397,19 @@ void do_present(const nvn_tex* t, const int crop[4], uint64_t native_generation 
         // would be a view of an RGBA8 image and take the SDR expansion, a flat, grey picture. The image's format is not asked as well:
         // an image first made as RGB10A2 under an RGBA8 picture would take an SDR picture for PQ)
         const VkFormat shown_format = t ? vk_format(t->d.format).format : VK_FORMAT_UNDEFINED;
-        present_native_pq.store(tex && dev.hdr && opts.hdr == 2 && shown_format == VK_FORMAT_A2B10G10R10_UNORM_PACK32,
+        present_native_pq.store(tex && dev.hdr && menu_hdr_running() == 2 && shown_format == VK_FORMAT_A2B10G10R10_UNORM_PACK32,
                                 std::memory_order_relaxed);
-        present_wonder_hdr.store(tex && dev.hdr && opts.hdr == 2 && shown_format == VK_FORMAT_B10G11R11_UFLOAT_PACK32,
+        present_wonder_hdr.store(tex && dev.hdr && menu_hdr_running() == 2 && shown_format == VK_FORMAT_B10G11R11_UFLOAT_PACK32,
                                  std::memory_order_relaxed);
         {   // (the presented picture's format, the game's and its image's, and the HDR path it takes, said when any of them
             // changes: what an HDR report needs)
             static int64_t said = -1;
             const int64_t now =
-                tex ? ((int64_t)tex->format * 4096 + (int64_t)shown_format) * 8 + (dev.hdr ? 4 : 0) + opts.hdr : -2;
+                tex ? ((int64_t)tex->format * 4096 + (int64_t)shown_format) * 8 + (dev.hdr ? 4 : 0) + menu_hdr_running() : -2;
             if (now != said) {
                 said = now;
                 logf("vk: present: %ux%u, format %d (its image's %d); the Insert menu's HDR %d, HDR10 swapchain %s: %s",
-                     tex ? tex->width : 0, tex ? tex->height : 0, (int)shown_format, tex ? (int)tex->format : 0, opts.hdr,
+                     tex ? tex->width : 0, tex ? tex->height : 0, (int)shown_format, tex ? (int)tex->format : 0, menu_hdr_running(),
                      dev.hdr ? "yes" : "no",
                      !dev.hdr ? "SDR" : present_wonder_hdr.load(std::memory_order_relaxed) ? "Wonder's float picture (RenoDX-style HDR)"
                      : present_native_pq.load(std::memory_order_relaxed) ? "the game's PQ picture (Native)"
@@ -5783,7 +5783,7 @@ void do_present(const nvn_tex* t, const int crop[4], uint64_t native_generation 
 
 bool output_preview_request(uint32_t width, uint32_t height) {
     std::lock_guard settings(menu_mu);
-    if (opts.hdr || opts.reflex || opts.dlss || framegen_on()) return false;
+    if (menu_hdr_running() || opts.reflex || opts.dlss || framegen_on()) return false;
     if (host->version < 41 || !host->output_preview_request || !output_preview_path.load(std::memory_order_acquire)) return false;
     std::lock_guard lk(output_trial_mu);
     if (output_trial.request.generation || TrialClock::now() < output_preview_queued_until) return false;
@@ -6202,8 +6202,8 @@ void present_image_with_trial(VkImage src, uint32_t sw, uint32_t sh, const int c
     std::lock_guard lk(present_image_mu);
     if (dev.closing.load(std::memory_order_acquire)) return;   // (the close retired the swapchain on purpose: making one again would take the window from under the compositor's final frames)
     static int hdr_was = -1;   // (the Insert menu's HDR as the swapchain was made for it; -1: not yet looked at)
-    const bool hdr_changed = hdr_was >= 0 && hdr_was != opts.hdr;   // (turned on or off: the swapchain's format)
-    if (hdr_was < 0) hdr_was = opts.hdr;
+    const bool hdr_changed = hdr_was >= 0 && hdr_was != menu_hdr_running();   // (turned on or off: the swapchain's format)
+    if (hdr_was < 0) hdr_was = menu_hdr_running();
     static int vsync_was = -1;   // (the V-Sync row as the swapchain was made for it: its present mode)
     // (and frame generation's multiplier, swapchain_framegen: a spare image a frame; and swapchain_dlssg: FIFO under V-Sync
     // Auto with DLSS Frame Generation making the frames. It turns to no once, when NGX's answer at the first present is a no
@@ -6236,7 +6236,7 @@ void present_image_with_trial(VkImage src, uint32_t sw, uint32_t sh, const int c
                                                    std::memory_order_release, std::memory_order_relaxed);
             return;   // (the old swapchain may already be retired; do not acquire or reset a frame fence)
         }
-        hdr_was = opts.hdr, vsync_was = vsync_now;
+        hdr_was = menu_hdr_running(), vsync_was = vsync_now;
     }
     // Resize or surface recovery can replace the chain after the display thread chose present-ahead.
     // A deferred pair needs two spare images before either one can be presented.
@@ -6254,7 +6254,7 @@ void present_image_with_trial(VkImage src, uint32_t sw, uint32_t sh, const int c
     {
         std::lock_guard lk(menu_mu);
         preview_path = async_on() && dev.swapchain && dev.present_wait && dev.swap_mode == VK_PRESENT_MODE_FIFO_KHR &&
-                       !dev.hdr && !opts.hdr && !opts.reflex && !opts.dlss && !framegen_on() && !present_defer_into;
+                       !dev.hdr && !menu_hdr_running() && !opts.reflex && !opts.dlss && !framegen_on() && !present_defer_into;
         output_preview_path.store(preview_path, std::memory_order_release);
         {
             std::unique_ptr<OutputTrialBacking> released;
@@ -8122,7 +8122,7 @@ void fill_replay_table(MkwVkRenderer& t) {
         if (id == HOS_OPT_CHEAT_ACTION) return menu_take_cheat_action();
         if (id == HOS_OPT_CHEAT_CAMERA) return menu_free_camera();
         if (id == HOS_OPT_CHEAT_SPEED) return menu_link_speed();
-        if (id == HOS_OPT_HDR_NATIVE) return dev.hdr && opts.hdr == 2;
+        if (id == HOS_OPT_HDR_NATIVE) return dev.hdr && menu_hdr_running() == 2;
         if (id == HOS_OPT_WONDER_HDR_WINDOW) return wonder_hdr_window_wanted() ? 1 : 0;
         if (id == HOS_OPT_HDR_TONEMAP) return scene_tonemap_on();
         if (id == HOS_OPT_HDR_PEAK) return std::clamp(opts.hdr_peak, 400, 10000);

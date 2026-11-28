@@ -30,6 +30,18 @@ class CacheTests(unittest.TestCase):
                 online._build_runtime(['cmake', '-S', 'source'], ['cmake', '--build', 'online'], [], {})
         self.assertEqual(run.call_count, 2)
 
+    @unittest.skipUnless(os.environ.get('WONDER_TEST_CMAKE'), 'set WONDER_TEST_CMAKE for CMake literal test')
+    def test_cmake_literal_preserves_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            script, output = base / 'check.cmake', base / 'result.txt'
+            paths = ['C:/Games/Wonder – édition/clang.exe', 'C:/a ]=] ]] ${NAME};/clang.exe']
+            script.write_text(''.join('file(APPEND ' + online.cmake_literal(output.as_posix()) + ' ' +
+                                      online.cmake_literal(path + "\n") + ')\n' for path in paths), encoding='utf-8')
+            result = subprocess.run([os.environ['WONDER_TEST_CMAKE'], '-P', str(script)], capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr.decode('utf-8', errors='replace'))
+            self.assertEqual(output.read_text(encoding='utf-8').splitlines(), paths)
+
     def test_source_location(self):
         with tempfile.TemporaryDirectory() as directory:
             build = Path(directory)

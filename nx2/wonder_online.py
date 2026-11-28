@@ -114,6 +114,15 @@ def _build_runtime(configure, compile_runtime, source_args, environment):
         raise OnlineBuildError(f'Could not build the online runtime: {reason}')
 
 
+def cmake_literal(value):
+    """A CMake bracket argument preserves Unicode and avoids variable/escape expansion."""
+    value = str(value)
+    equals = ''
+    while ']' + equals + ']' in value:
+        equals += '='
+    return '[' + equals + '[' + value + ']' + equals + ']'
+
+
 def libraries(out, compiler, jobs):
     """Called by the ordinary Builder. No game data, Git, Perl or pip is required."""
     out = Path(out).resolve()
@@ -134,8 +143,8 @@ def libraries(out, compiler, jobs):
     toolchain = build / 'toolchain.cmake'
     toolchain.write_text('\n'.join([
         'set(CMAKE_SYSTEM_NAME Windows)',
-        'set(CMAKE_C_COMPILER ' + json.dumps(compiler.as_posix()) + ')',
-        'set(CMAKE_CXX_COMPILER ' + json.dumps(compiler.with_name('clang++.exe').as_posix()) + ')',
+        'set(CMAKE_C_COMPILER ' + cmake_literal(compiler.as_posix()) + ')',
+        'set(CMAKE_CXX_COMPILER ' + cmake_literal(compiler.with_name('clang++.exe').as_posix()) + ')',
         'set(CMAKE_C_COMPILER_TARGET x86_64-w64-mingw32)',
         'set(CMAKE_CXX_COMPILER_TARGET x86_64-w64-mingw32)',
     ]) + '\n', encoding='utf-8', newline='\n')

@@ -1,11 +1,11 @@
-/* (longshot) Discord Rich Presence: "Playing Longshot" with the time played in the player's Discord status, through the local
+/* (longshot) Discord Rich Presence: "Playing Wondershot" with the time played in the player's Discord status, through the local
    IPC of a Discord client running on this PC, and the place Link is while he is in a map ("Kakariko Village"; the title
-   and the start say "Longshot" and the release instead). What it says is the player's to change in longshot_options.ini
+   and the start show the release instead). What it says is the player's to change in longshot_options.ini
    (host/discord_activity.c). Nothing leaves the machine but the activity itself, and nothing is sent while the Insert
    menu's "Discord status" row is off (on by default; it does nothing without a Discord client running).
 
    Discord shows the *application's* name above the status ("Playing <name>") and its art: the status needs a Discord application
-   of its own (discord.com/developers/applications, named Longshot, its art uploaded under Rich Presence > Art Assets with the key
+   of its own (discord.com/developers/applications, named Wondershot, its art uploaded under Rich Presence > Art Assets with the key
    below). Its Application ID goes into LONGSHOT_DISCORD_APP_ID_DEFAULT; longshot_options.ini's discord_app_id= or
    HOS_DISCORD_APP_ID override it. With no id the thread stays idle and says so once in the log.
 
@@ -45,7 +45,7 @@
 #include "oot_area_names.h"
 #include "oot_heart_containers.h"
 
-#define LONGSHOT_DISCORD_APP_ID_DEFAULT "1570559772111933578"   /* (the Longshot application's id, digits) */
+#define LONGSHOT_DISCORD_APP_ID_DEFAULT "1576121625798119466"   /* (the Wondershot application's id, digits) */
 
 void hos_log(const char *fmt, ...);
 int rx_option(int id, int otherwise);
@@ -231,7 +231,7 @@ static Ipc connect_client(const char *app_id) {
     }
     return IPC_NONE;
 }
-/* the activity (host/discord_activity.c): in a map the place Link is, elsewhere "Longshot" and the release; the start of
+/* the activity (host/discord_activity.c): in a map the place Link is, elsewhere the release; the start of
    play for the elapsed time; the application's art. json is the activity with nonce 0, for telling a change */
 static void activity_now(unsigned nonce, long long started, char *json, size_t cap) {
     char version[64], build[64], commit[64], release[64], map[96] = "", area[128] = "";
@@ -310,7 +310,7 @@ static void presence_main(void) {
         if (!app_id[0]) {
             if (!said_no_app)
                 hos_log("discord: no application id: discord_app_id= in longshot_options.ini or HOS_DISCORD_APP_ID (the "
-                        "Discord application named Longshot); the status stays off");
+                        "Discord application named Wondershot); the status stays off");
             said_no_app = 1;
             continue;
         }

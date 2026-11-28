@@ -1033,8 +1033,8 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     dev.hdr_sdr_why = hdr_sdr_none;
     static int told = -1;   // (the HdrSdrWhy last said, hdr_sdr_none an HDR10 surface; -1 nothing yet, or HDR off since)
     static std::string told_display;
-    if (!opts.hdr) told = -1;
-    if (opts.hdr) {
+    if (!menu_hdr_running()) told = -1;
+    if (menu_hdr_running()) {
         for (const auto& f : formats)
             if ((f.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 || f.format == VK_FORMAT_A2R10G10B10_UNORM_PACK32) &&
                 f.colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT)
@@ -1309,7 +1309,7 @@ int system_hdr_on(std::string* display) {
 /// and Windows' HDR on for the game's display (or not known). Asked when the game makes its window, before the swapchain exists,
 /// so dev.hdr can't say yet
 bool wonder_hdr_window_wanted() {
-    if (opts.hdr != 2) return false;
+    if (menu_hdr_running() != 2) return false;
     if (dev.hdr) return true;
     const int system = system_hdr_on(nullptr);
     logf("vk: Wonder HDR: the window asked for; Windows HDR %s", system > 0 ? "on" : system == 0 ? "off: the SDR window kept" : "unknown");

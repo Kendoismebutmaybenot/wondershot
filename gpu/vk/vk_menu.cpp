@@ -3910,6 +3910,7 @@ void startup_screen(const StartupView* view) {
     probe_upscalers_soon();
 }
 
+static int hdr_at_start = 0;   // HDR window textures are fixed for this run, even while the saved choice changes.
 static bool first_start = false;   // (menu_init: no options file yet. menu_first_start_for_gpu picks the preset for the card)
 void menu_init() {
     static bool done;
@@ -4065,6 +4066,7 @@ void menu_init() {
         env_override(&opts.output_res, parse_output(e));
     }
     outputs_sync();   // (the Aspect ratio follows the size read)
+    hdr_at_start = opts.hdr;   // Keep rendering on the startup choice until the next process.
     restart_init();   // (what this run started with: the rows that take a restart differ from it once changed)
 }
 
@@ -4175,8 +4177,9 @@ void menu_set_gpu_count(int count) {
 bool menu_is_open() { return open_now.load(std::memory_order_relaxed); }
 double menu_target_ms() { return fps_target_ms(); }   // (the performance summary's: perf_report.cpp)
 int menu_fps_cap() { return fps_cap_now(); }          // (likewise: its fps_cap label)
-bool scene_tonemap_on() { return dev.hdr && opts.hdr == 2 && opts.hdr_tonemap == 1; }
-bool wonder_hdr_on() { return dev.hdr && opts.hdr == 2; }
+int menu_hdr_running() { return hdr_at_start; }
+bool scene_tonemap_on() { return dev.hdr && menu_hdr_running() == 2 && opts.hdr_tonemap == 1; }
+bool wonder_hdr_on() { return dev.hdr && menu_hdr_running() == 2; }
 bool menu_hdr_on() { return opts.hdr != 0; }
 // (the tools off on the Debug tab: flight, the free camera and heart protection put away; -1, heart protection never set, is the
 // host's own HOS_OOT_PROTECT_HEARTS)

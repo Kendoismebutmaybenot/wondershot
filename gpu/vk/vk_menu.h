@@ -180,6 +180,7 @@ uint64_t output_preview_take_rebuilt_size();
 void menu_tick();             // (each frame shown: the keys, while the game's window has the focus)
 bool menu_is_open();
 /// (longshot) The game's scene tone mapped by PsychoV35: HDR set to Native on an HDR display, and the Tone mapper row so
+int menu_hdr_running();       // HDR mode loaded at startup; menu changes apply on restart.
 bool scene_tonemap_on();
 /// (Wonder build) HDR on (stored as Native) on an HDR10 swapchain: shader_overrides/hdr/ applies, the grading is pushed
 bool wonder_hdr_on();
