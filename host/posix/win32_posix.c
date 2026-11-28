@@ -17,7 +17,7 @@
 #include <sys/resource.h>
 #include <sys/syscall.h>
 #include <sys/time.h>
-#include <ucontext.h>
+#include "signal_context.h"
 
 /* the guest window (third_party/a64-kit/rt/a64.h A64_HOST_BASE, host/hos.h HOS_GUEST_SPACE): one mapping, all of it
    readable and writable, which VirtualQuery reports as committed without asking the kernel */
@@ -671,7 +671,11 @@ BOOL GetLogicalProcessorInformation(SYSTEM_LOGICAL_PROCESSOR_INFORMATION *info, 
 }
 void GetSystemInfo(SYSTEM_INFO *si) {
     memset(si, 0, sizeof *si);
+#if defined(__aarch64__)
+    si->wProcessorArchitecture = 12;  /* (PROCESSOR_ARCHITECTURE_ARM64) */
+#else
     si->wProcessorArchitecture = 9;   /* (PROCESSOR_ARCHITECTURE_AMD64) */
+#endif
     si->dwPageSize = (DWORD)sysconf(_SC_PAGESIZE);
     si->dwAllocationGranularity = 0x10000;
     si->dwNumberOfProcessors = (DWORD)sysconf(_SC_NPROCESSORS_ONLN);
@@ -1158,13 +1162,46 @@ static LPTOP_LEVEL_EXCEPTION_FILTER unhandled;
 static struct sigaction previous[32];
 static pthread_mutex_t handlers_mu = PTHREAD_MUTEX_INITIALIZER;
 
+#if defined(__aarch64__)
+/* The POSIX consumers use these legacy field names for diagnostics and retry.
+   Leave the interrupted ARM general and SIMD registers in the kernel frame. */
+static void context_from(CONTEXT *c, const ucontext_t *uc) {
+    c->Rip = signal_pc(uc);
+    c->Rsp = uc->uc_mcontext.sp;
+    c->Rbp = uc->uc_mcontext.regs[29];
+    c->ContextFlags = CONTEXT_CONTROL;
+}
+static void context_to(ucontext_t *uc, const CONTEXT *c) {
+    uc->uc_mcontext.pc = c->Rip;
+    uc->uc_mcontext.sp = c->Rsp;
+    uc->uc_mcontext.regs[29] = c->Rbp;
+}
+/* Linux arm64 sigcontext auxiliary records: ESR is optional. For a data
+   abort its bit 6 identifies a write (Linux UAPI asm/sigcontext.h). */
+static int signal_access(const ucontext_t *uc) {
+    const unsigned char *records = uc->uc_mcontext.__reserved;
+    for (size_t off = 0; off + 8 <= sizeof uc->uc_mcontext.__reserved;) {
+        uint32_t head[2];
+        memcpy(head, records + off, sizeof head);
+        if (head[1] < 16 || head[1] % 16 || head[1] > sizeof uc->uc_mcontext.__reserved - off) break;
+        if (head[0] == 0x45535201 && head[1] == 16) {  /* ESR_MAGIC */
+            uint64_t esr;
+            memcpy(&esr, records + off + 8, sizeof esr);
+            if ((esr >> 26) == 0x20) return 8;  /* instruction abort from EL0 */
+            return (esr >> 26) == 0x24 && (esr & (1u << 6));
+        }
+        off += head[1];
+    }
+    return 0;
+}
+#else
 static void context_from(CONTEXT *c, const ucontext_t *uc) {
     const greg_t *g = uc->uc_mcontext.gregs;
     c->Rax = (DWORD64)g[REG_RAX], c->Rcx = (DWORD64)g[REG_RCX], c->Rdx = (DWORD64)g[REG_RDX], c->Rbx = (DWORD64)g[REG_RBX];
     c->Rsp = (DWORD64)g[REG_RSP], c->Rbp = (DWORD64)g[REG_RBP], c->Rsi = (DWORD64)g[REG_RSI], c->Rdi = (DWORD64)g[REG_RDI];
     c->R8 = (DWORD64)g[REG_R8], c->R9 = (DWORD64)g[REG_R9], c->R10 = (DWORD64)g[REG_R10], c->R11 = (DWORD64)g[REG_R11];
     c->R12 = (DWORD64)g[REG_R12], c->R13 = (DWORD64)g[REG_R13], c->R14 = (DWORD64)g[REG_R14], c->R15 = (DWORD64)g[REG_R15];
-    c->Rip = (DWORD64)g[REG_RIP], c->EFlags = (DWORD)g[REG_EFL], c->ContextFlags = CONTEXT_FULL;
+    c->Rip = signal_pc(uc), c->EFlags = (DWORD)g[REG_EFL], c->ContextFlags = CONTEXT_FULL;
 }
 static void context_to(ucontext_t *uc, const CONTEXT *c) {
     greg_t *g = uc->uc_mcontext.gregs;
@@ -1174,11 +1211,15 @@ static void context_to(ucontext_t *uc, const CONTEXT *c) {
     g[REG_R12] = (greg_t)c->R12, g[REG_R13] = (greg_t)c->R13, g[REG_R14] = (greg_t)c->R14, g[REG_R15] = (greg_t)c->R15;
     g[REG_RIP] = (greg_t)c->Rip;
 }
+static int signal_access(const ucontext_t *uc) {
+    return (uc->uc_mcontext.gregs[REG_ERR] & 2) ? 1 : 0;
+}
+#endif
 static void on_signal(int sig, siginfo_t *si, void *uctx) {
     ucontext_t *uc = (ucontext_t *)uctx;
     EXCEPTION_RECORD rec;
     memset(&rec, 0, sizeof rec);
-    CONTEXT ctx;
+    CONTEXT ctx = {0};
     context_from(&ctx, uc);
     rec.ExceptionCode = sig == SIGSEGV || sig == SIGBUS ? EXCEPTION_ACCESS_VIOLATION
                       : sig == SIGILL ? EXCEPTION_ILLEGAL_INSTRUCTION
@@ -1186,7 +1227,7 @@ static void on_signal(int sig, siginfo_t *si, void *uctx) {
     rec.ExceptionAddress = (void *)(uintptr_t)ctx.Rip;
     if (sig == SIGSEGV || sig == SIGBUS) {
         rec.NumberParameters = 2;
-        rec.ExceptionInformation[0] = (uc->uc_mcontext.gregs[REG_ERR] & 2) ? 1 : 0;   /* (1: a write) */
+        rec.ExceptionInformation[0] = signal_access(uc);
         rec.ExceptionInformation[1] = (ULONG_PTR)si->si_addr;
     }
     EXCEPTION_POINTERS ep = {&rec, &ctx};

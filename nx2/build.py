@@ -1166,13 +1166,15 @@ MARK_BITMAP = [] if os.environ.get("RX_MARK_BITMAP", "").strip().lower() in ("0"
 # (nx2/suyu_rt_fixes.py) and the bit counts are single instructions. No contraction, so a C expression is rounded as
 # written (the exact bodies and FPX1's proofs assume it). RX_MARCH=x86-64: the old baseline
 # (a CPU without AVX2 would build the game and then stop at its first AVX2 instruction, 0xc000001d. The game is built on the PC it runs on: a CPU without x86-64-v3's features gets x86-64-v2, or x86-64)
-from host_cpu import host_march, native_cpu   # (make_game.py asks it too: the AppImage's renderer)
+from host_cpu import host_march, native_arm64, native_cpu   # (make_game.py asks it too: the AppImage's renderer)
 
-MARCH = os.environ.get("RX_MARCH") or host_march()
+ARM64_LINUX = LINUX and native_arm64()
+CX16 = [] if ARM64_LINUX else ["-mcx16"]
+MARCH = os.environ.get("RX_MARCH") or ("x86-64-v3" if not LINUX and native_arm64() else host_march())
 if os.environ.get("RX_MARCH"):
     if MARCH != "x86-64-v3":
         print("build: the game is built for %s (RX_MARCH)" % MARCH, flush=True)
-elif MARCH != "x86-64-v3":
+elif not ARM64_LINUX and MARCH != "x86-64-v3":
     print("build: this CPU has no AVX2: the game is built for %s (a little slower)" % MARCH, flush=True)
 CPU = ["-march=" + MARCH, "-ffp-contract=off"]
 # A CPU with x86-64-v3's features gets the game built for itself, -march=native: what it has beyond v3 (AVX-512 and
@@ -1203,9 +1205,9 @@ OPT = "O1"   # (the lifted code's level; code_hot.c's is RX_HOT_OPT)
 
 
 def flags(gen, rt64, opt, polls):
-    return target() + CPU + [
+    return target() + CPU + CX16 + [
         "-I" + rt64, "-I" + gen, "-I" + os.path.join(kit.KIT, "rt"), "-I" + NX2_RT, "-Wno-everything",
-        "-fno-strict-aliasing", "-mcx16", "-" + opt, "-g0", "-mllvm", "-rotation-max-header-size=0",
+        "-fno-strict-aliasing", "-" + opt, "-g0", "-mllvm", "-rotation-max-header-size=0",
         "-ffunction-sections", "-mllvm", "-capture-tracking-max-uses-to-explore=5000"] + \
         (["-DA64_POLLING"] if polls else []) + WRITE_TRACK + MARK_BITMAP
 
@@ -1874,7 +1876,7 @@ def main():
     # as the three gpu headers the blob named before, so an edit to one of those kept their old objects.) What a file reads
     # from elsewhere (FFmpeg, dav1d, the system's) is in extras, as before
     host_fl = target() + CPU + (["-I" + POSIX, "-D_GNU_SOURCE"] if LINUX else []) + \
-        ["-I" + HOST, "-I" + rt64, "-I" + gen, "-Wno-everything", "-O2", "-g0", "-mcx16", "-DA64_POLLING"] + WRITE_TRACK + \
+        ["-I" + HOST, "-I" + rt64, "-I" + gen, "-Wno-everything", "-O2", "-g0", "-DA64_POLLING"] + CX16 + WRITE_TRACK + \
         (TRACY_FLAGS + ["-DTRACY_EXPORTS"] if TRACY else [])
     if a.standalone and not LINUX:
         host_fl += ["-DWONDER_WITH_ONLINE"]

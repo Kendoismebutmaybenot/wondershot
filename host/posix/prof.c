@@ -23,7 +23,7 @@
 #include <string.h>
 #include <sys/syscall.h>
 #include <time.h>
-#include <ucontext.h>
+#include "signal_context.h"
 #include <unistd.h>
 #include <unwind.h>
 #include <windows.h>
@@ -182,7 +182,7 @@ static void on_sample(int sig, siginfo_t *si, void *uctx) {
     const int saved = errno;
     if ((int)syscall(SYS_gettid) == sample_tid) {
         const ucontext_t *u = (const ucontext_t *)uctx;
-        const uintptr_t rip = (uintptr_t)u->uc_mcontext.gregs[REG_RIP];
+        const uintptr_t rip = signal_pc(u);
         Walk w = {sample_pcs + 1, 0, DEPTH - 1, rip, 0};
         sample_pcs[0] = rip;
         _Unwind_Backtrace(walk_step, &w);
@@ -418,7 +418,7 @@ static void on_watch(int sig, siginfo_t *si, void *uctx) {
     /* (si_perf_data, the event's sig_data: the watch's index. glibc's siginfo_t has no name for it: the kernel puts it
        after si_addr, at 24) */
     const unsigned long idx = *(const unsigned long *)((const char *)si + 24) & 3;
-    const uint64_t rip = (uint64_t)((const ucontext_t *)uctx)->uc_mcontext.gregs[REG_RIP];
+    const uint64_t rip = signal_pc(uctx);
     const uint64_t key = ((uint64_t)(watch_phase & 1) << 62) | ((uint64_t)idx << 58) | rip;
     for (uint32_t i = (uint32_t)((key >> 2) * 2654435761u) & 8191, n = 0; n < 8192; n++, i = (i + 1) & 8191) {
         uint64_t k = __atomic_load_n(&watch_keys[i], __ATOMIC_RELAXED);
