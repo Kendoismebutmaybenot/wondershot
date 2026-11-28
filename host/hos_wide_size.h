@@ -114,4 +114,11 @@ static inline void hos_wonder_output_size(unsigned *w, unsigned *h, int follow_m
     hos_wonder_wide_fit(w, h);
 }
 
+/* Window mode grows the short field-of-view axis without changing the long one. */
+enum { HOS_WONDER_WINDOW_ASPECT = 2 };
+static inline float hos_wonder_vertical_span(unsigned w, unsigned h) {
+    if (!w || (uint64_t)w * 9 >= (uint64_t)h * 16) return 1.0f;
+    return (16.0f / 9.0f) * ((float)h / w);
+}
+
 #endif

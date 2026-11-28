@@ -5779,7 +5779,18 @@ void imports_give_back() {   // (pools_mu held)
         episode_deepest = episode_given = 0;   // (out of pressure: the next episode starts afresh)
     }
     const bool for_linux = linux_want > want;
-    const uint64_t want_bytes = std::max(want, linux_want);
+    uint64_t want_bytes = std::max(want, linux_want);
+    // (private live-size spike, HOS_WONDER_LIVE_TIER: imports unbound for kWonderImportIdle submissions go back whatever the
+    // budget. On host-pointer imports (no /dev/udmabuf) the driver walks every imported page at each submission: queue submit
+    // 2.1 ms a frame at 112 MB imported, 8.0 at 484 MB, 15.6 at 668 MB, and the imports the large window sizes made stayed
+    // after the window was small again: 47 fps instead of 60)
+    const bool spike_idle = wonder_window_live();
+    constexpr uint64_t kWonderImportIdle = 3600;
+    if (spike_idle)
+        for (auto& [lo, p] : imported)
+            if ((p.mstate == Pool::MIRROR_NONE || p.mstate == Pool::MIRROR_REFUSED) && p.last_value <= mem_completed &&
+                mem_rec_value > p.last_value + kWonderImportIdle)
+                want_bytes += p.hi - p.lo;
     if (!want_bytes) return;
     std::vector<std::map<uint64_t, Pool>::iterator> idle;
     for (auto it = imported.begin(); it != imported.end(); ++it) {

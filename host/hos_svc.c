@@ -533,10 +533,14 @@ void a64_svc(Ctx *c, uint32_t imm) {
         }
         hos_commit(c->x[0], c->x[1]);
         hos_output_page_change_end();
+        if (hos_tier_probe_phase() >= 0) hos_log("tier: phase=%d physical-map addr=%llx bytes=%llu",
+            hos_tier_probe_phase(), (unsigned long long)c->x[0], (unsigned long long)c->x[1]);
         if (hos_trace) hos_log("MapPhysicalMemory(%#llx, %#llx)", (unsigned long long)c->x[0], (unsigned long long)c->x[1]);
         c->x[0] = R_OK;
         return;
     case 0x2D:   /* UnmapPhysicalMemory(address, size): the pages read as zero if mapped again */
+        if (hos_tier_probe_phase() >= 0) hos_log("tier: phase=%d physical-unmap addr=%llx bytes=%llu",
+            hos_tier_probe_phase(), (unsigned long long)c->x[0], (unsigned long long)c->x[1]);
         /* A zero-length MEM_DECOMMIT at the allocation base frees the entire Windows reservation. */
         if (!c->x[1]) {
             c->x[0] = 0xCA01;

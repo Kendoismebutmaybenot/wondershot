@@ -104,6 +104,7 @@
 #include "compute_pin.h"
 #include "mesh_conv.h"   // (RX_VK_MESH_CONV: the indirect mesh draws' ring slots and the batch at the game's barriers)
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
+#include "wonder_plan.h"   // (private live-size spike: the menu plan)
 
 namespace mkwvk {
 static bool route_scene_format(VkFormat f);   // (the FPS counter footer's, below upscale_stub)
@@ -3974,11 +3975,12 @@ struct DescWriter {
     std::vector<VkDescriptorBufferInfo> bufs;
     std::vector<VkDescriptorImageInfo> imgs;
     std::vector<VkBufferView> views;
-    std::array<uint64_t, 2> sampled_sizes{};
+    std::array<uint64_t, 2> sampled_sizes{}, sampled_gpu{};
     const Program* prog = nullptr;   // (the program they were built for: a dispatch builds its own over a draw's)
     void reset() {
         writes.clear(), bufs.clear(), imgs.clear(), views.clear();
         sampled_sizes = {};
+        sampled_gpu = {};
     }
 };
 TLS_OBJECT(dw, DescWriter)
@@ -4594,8 +4596,10 @@ void build_descriptors(const NvnState& s, const Program& p) {
                                tex ? tex->width : 0, tex ? tex->height : 0, tex ? tex->layers : 0, tex ? (void*)tex->image : nullptr,
                                (void*)view, view ? "" : " (dummy)");
                 if (view && tex && tex->gpu_written) draw_sampled().push_back(tex);
-                if (view && tex && out.imgs.size() < out.sampled_sizes.size())
+                if (view && tex && out.imgs.size() < out.sampled_sizes.size()) {
                     out.sampled_sizes[out.imgs.size()] = (uint64_t)tex->height << 32 | tex->width;
+                    out.sampled_gpu[out.imgs.size()] = tex->gpu;
+                }
                 if (!view) view = dummies.view[(int)vt], st_dummy_textures += handle != 0;
                 // (an image of one level: no anisotropy of the row's, sampler_make)
                 out.imgs.push_back({sampler_for((int)(handle >> 20), d.is_depth, tex && tex->levels <= 1), view,
@@ -4905,7 +4909,7 @@ thread_local uint64_t fallback_payload_address = 0, fallback_records_address = 0
 thread_local uint64_t fallback_indirect_input = 0;
 
 void push_constants(VkCommandBuffer cmd, const Program& p, const Targets* at, uint32_t fallback_first = 0,
-                    const std::array<float, 2>& pause_clip = {1.0f, 0.0f}) {
+                    const std::array<float, 4>& pause_clip = {1.0f, 0.0f, 1.0f, 0.0f}) {
     checkpoint(cmd, p, at ? 'd' : 'c');
     {   // (frame overlap, vk_replay.cpp: each draw and dispatch counted here, where every one comes by whatever it pushes.
         // A dispatch, the mesh fallback's compute stages, and a draw whose program follows pointers through the page table
@@ -4957,7 +4961,7 @@ void push_constants(VkCommandBuffer cmd, const Program& p, const Targets* at, ui
         std::memcpy(data + Shader::Backend::SPIRV::RENDERAREA_LAYOUT_OFFSET, ra, sizeof ra);
     }
     if (wonder_pause_clip_program(p.key))
-        std::memcpy(data + Shader::Backend::SPIRV::WONDER_PAUSE_CLIP_PUSH_OFFSET, pause_clip.data(), 8);
+        std::memcpy(data + Shader::Backend::SPIRV::WONDER_PAUSE_CLIP_PUSH_OFFSET, pause_clip.data(), 16);
     vkCmdPushConstants(cmd, p.layout, p.push_stages, 0, kPushSize, data);
 }
 
@@ -5146,6 +5150,12 @@ struct Pass {
     uint16_t written = 0;                  // (its targets written so far: colour i bit i, depth bit 8)
     float wonder_pause_left = 0.0f;
     bool wonder_hud_badge = false;
+    bool wonder_map_hud = false;
+    // (private live-size spike, wonder_plan.h) the menu chrome group the pass's draws are in now: 1 a header, 2 a footer; the
+    // footer's last placed draw on the right half (its prompts); the pause screen in a tall window and its last draw's group
+    // (1 the panel, 2 the details): draws with no place of their own (cached text shadows) go with the draw before them
+    int wonder_dock = 0;
+    bool wonder_dock_right = false;
     // The map downsample can end one pass before the lobby header starts another.
     WonderLobbyDraw wonder_lobby_draw = WonderLobbyDraw::Other;
 };
@@ -5321,6 +5331,8 @@ void begin_pass(VkCommandBuffer cmd, const Targets& at) {
     ps.sampled.clear(), ps.sampled_targets = 0, ps.written = 0;
     ps.wonder_pause_left = 0.0f;
     ps.wonder_hud_badge = false;
+    ps.wonder_map_hud = false;
+    ps.wonder_dock = 0, ps.wonder_dock_right = false;
     vkCmdBeginRendering(cmd, &ri);
     ps.open = true;
     st_passes++;
@@ -5401,7 +5413,7 @@ bool desc_slots_kept(const DescBound& k, uint64_t reg_gen) {
 }
 /// wm_sig: what the draw's program makes of the write masks (program_wm_sig)
 int dyn_pack(const NvnState& s, const Targets& at, VkPrimitiveTopology topo, bool mesh, uint64_t wm_sig, float ui_scale, float ui_left,
-             float ui_top, bool expand_pause_clip,
+             float ui_top, int clip_mode,
              float* fp, uint32_t* up, uint8_t* raw) {
     fp[0] = s.viewport[0][0], fp[1] = s.viewport[0][1], fp[2] = s.viewport[0][2], fp[3] = s.viewport[0][3];
     fp[4] = s.depth_near, fp[5] = s.depth_far;
@@ -5416,7 +5428,7 @@ int dyn_pack(const NvnState& s, const Targets& at, VkPrimitiveTopology topo, boo
     up[10] = at.width, up[11] = at.height, up[12] = (uint32_t)at.n, up[13] = (uint32_t)at.depth_format;
     up[14] = at.depth != nullptr;
     up[15] = (uint32_t)s.color.blend_en, up[16] = s.chmask.mask;
-    up[17] = (uint32_t)topo, up[18] = (mesh ? 1u : 0u) | (expand_pause_clip ? 2u : 0u);
+    up[17] = (uint32_t)topo, up[18] = (mesh ? 1u : 0u) | (uint32_t)clip_mode << 1;
     up[19] = s.restart ? 1u : 0u, up[20] = s.raster_discard ? 1u : 0u, up[21] = s.depth_clamp ? 1u : 0u, up[22] = s.ms.a2c ? 1u : 0u;
     up[23] = (uint32_t)s.poly.cull, up[24] = (uint32_t)s.poly.front, up[25] = (uint32_t)s.poly.mode, up[26] = (uint32_t)s.poly.offset_en;
     for (int i = 0; i < 8; i++) up[27 + i] = (uint32_t)at.color_format[i];
@@ -5448,6 +5460,15 @@ struct WonderPauseCursor {
     float shift = 0.0f;
 };
 TLS_OBJECT(wonder_pause_cursor, WonderPauseCursor)
+
+// Offscreen text passes interrupt the pause draws to the scene target.
+struct WonderPauseLayout {
+    uint64_t frame = 0;
+    uint32_t target = 0;
+    bool details = false;
+};
+TLS_OBJECT(wonder_pause_layout, WonderPauseLayout)
+
 
 static bool wonder_panel(const NvnState& s, const Program& p) {
     const bool strip = p.key == 0x17eae0d5631a64d9ULL && wonder_sampled_size(0, 8, 8);
@@ -5486,6 +5507,11 @@ static float wonder_ui_scale(const NvnState& s, const Targets& at, const Program
     case 0xfc83575fd66091b9ULL: // menu card fills and shadows
         if (!wonder_sampled_size(1, 2, 2)) return 1.0f;
         break;
+    case 0xf9c8216a13b81ef9ULL: // (private live-size spike) the settings list's row frames, a 16 x 16 nine-patch: the selected row's
+        if (!wonder_sampled_size(0, 16, 16)) return 1.0f;   // hatch stripe sat above the header in tall windows, past the row in wide
+        break;
+    case 0xc41c69523fcf97e6ULL: // (private live-size spike) the character select's iris, the character's outline
+        break;
     case 0x9e9aa65dde5f8e57ULL: // patterned menu card faces
         if (!wonder_sampled_size(1, 16, 16)) return 1.0f;
         break;
@@ -5514,6 +5540,19 @@ static float wonder_ui_scale(const NvnState& s, const Targets& at, const Program
         return 1.0f;
     }
     return wonder_panel(s, p) ? 1.0f : (at.height * (16.0f / 9.0f)) / at.width;
+}
+
+// The gameplay HUD's scale for a window (layout units: the game's 1920 x 1080 layout; 1 at 1920 x 1080). Height decides
+// it; width caps it so the top-left group (coins, flower coins, lives, badge: about kWonderHudGroupWidth layout units wide
+// with its margin, measured on the 1080 x 1920 capture) takes at most kWonderHudShare of the window's width. Never smaller
+// than the whole layout fitted in the window, the game's own. At 16:9 all three agree: identity.
+constexpr float kWonderHudShare = 0.30f;
+constexpr float kWonderHudGroupWidth = 260.0f;
+static float wonder_hud_scale(uint32_t width, uint32_t height) {
+    const float by_height = height / 1080.0f;
+    const float cap = kWonderHudShare * width / kWonderHudGroupWidth;
+    const float fit = std::min(width / 1920.0f, height / 1080.0f);
+    return std::max(fit, std::min(by_height, cap));
 }
 
 static bool wonder_top_left_hud(Pass& ps, const NvnState& s, const Targets& at, const Program& p) {
@@ -5546,15 +5585,287 @@ static bool wonder_top_left_hud(Pass& ps, const NvnState& s, const Targets& at, 
     return false;
 }
 
+// Draw-state samples tagged with the harness phase and replay frame. Collapse repeated tuples.
+static int tier_draw_phase() {
+    static const char* path = getenv("HOS_WONDER_TIER_PROBE");
+    if (!path) return -1;
+    static thread_local uint64_t last = ~uint64_t(0);
+    static thread_local uint64_t phase_start = 0;
+    static thread_local int phase = -1;
+    uint64_t frame = texture_frame_no();
+    if (frame != last) {
+        last = frame;
+        if (FILE* f = fopen(path, "r")) {
+            int n = fgetc(f) - '0';
+            fclose(f);
+            if (n >= 0 && n <= 3 && n != phase) { phase = n; phase_start = frame; }
+        }
+    }
+    return frame - phase_start < 6 || frame % 30 == 0 ? phase : -1;
+}
+
+static void tier_draw(const NvnState& s, const Targets& at, const Program& p, int phase) {
+    static thread_local int old = -1;
+    static thread_local std::set<std::string> seen;
+    if (old != phase) { old = phase; seen.clear(); }
+    if (seen.size() >= 1200) return;
+    char line[320];
+    snprintf(line, sizeof line, "renderArea=%ux%u c0=%llx ds=%llx prog=%llx vp=%.2f,%.2f,%.2f,%.2f sc=%d,%d,%d,%d",
+        at.width, at.height, (unsigned long long)(at.n && at.color[0] ? at.color[0]->gpu : 0),
+        (unsigned long long)(at.depth ? at.depth->gpu : 0), (unsigned long long)p.key,
+        s.viewport[0][0], s.viewport[0][1], s.viewport[0][2], s.viewport[0][3],
+        s.scissor[0], s.scissor[1], s.scissor[2], s.scissor[3]);
+    if (seen.emplace(line).second)
+        logf("tier: draw phase=%d frame=%llu %s", phase, (unsigned long long)texture_frame_no(), line);
+}
+
+// (private live-size spike) What each window-sized colour target got drawn over this frame: the largest viewport extent from
+// the origin, per target GPU address (wonder_live_drawn_crop, at the present). Lock-free slots: a draw only does atomic maxes.
+struct WonderDrawnSlot {
+    std::atomic<uint64_t> gpu{0}, frame{0};
+    std::atomic<uint32_t> w{0}, h{0};
+};
+WonderDrawnSlot wonder_drawn[8];
+void wonder_drawn_note(const NvnState& s, const Targets& at) {
+    const bool on = wonder_window_live();
+    if (!on || !at.n || !at.color[0] || at.width != dev.swap_extent.width || at.height != dev.swap_extent.height) return;
+    if (s.viewport[0][0] != 0.0f || s.viewport[0][1] != 0.0f) return;
+    const uint64_t gpu = at.color[0]->gpu, frame = texture_frame_no();
+    WonderDrawnSlot& d = wonder_drawn[(gpu >> 12) % 8];
+    uint64_t was = d.gpu.load(std::memory_order_relaxed);
+    if (was != gpu) {
+        if (!d.gpu.compare_exchange_strong(was, gpu) && was != gpu) return;   // (another target took the slot this instant)
+        d.w = 0, d.h = 0, d.frame = frame;
+    }
+    if (d.frame.exchange(frame) != frame) d.w = 0, d.h = 0;   // (a new frame: this frame's draws only)
+    const uint32_t w = (uint32_t)s.viewport[0][2], h = (uint32_t)s.viewport[0][3];
+    uint32_t o = d.w.load(std::memory_order_relaxed);
+    while (w > o && !d.w.compare_exchange_weak(o, w)) {}
+    o = d.h.load(std::memory_order_relaxed);
+    while (h > o && !d.h.compare_exchange_weak(o, h)) {}
+}
+
+// (private live-size spike) A layout quad across the whole 1920-unit layout width, drawn by the menus' fill and pattern
+// programs: the uniform's +0x210 holds the quad's size and +0x218 its corner (build 2's UI log: the settings header bar
+// 1920 x 120 at y 540, its footer bar 1920 x 80 at y -540, its panel 1920 x 1080, the hatch stripes 1920 x 50; the loading
+// backdrop 1920 x 1080 at 0, 0). Pictures (other sizes) are left alone.
+struct WonderBand { bool full_height = false; };
+bool wonder_full_width_band(const NvnState& s, const Program& p, WonderBand& out) {
+    const bool fill = p.key == 0x76644328dc442686ULL;
+    const bool pattern = p.key == 0x17eae0d5631a64d9ULL && wonder_sampled_size(0, 640, 640);
+    if (!fill && !pattern) return false;
+    const auto& u = s.ubo[0][0];
+    float model[8]{}, quad[4]{};
+    if (!u.addr || u.size < 0x220 || !ub_read(u.addr + 0x40, model, sizeof model) || !ub_read(u.addr + 0x210, quad, sizeof quad))
+        return false;
+    if (quad[0] < 1919.0f || std::abs(quad[2] + 960.0f) > 1.0f || std::abs(model[0] - 1.0f) > 0.01f || std::abs(model[1]) > 0.001f ||
+        std::abs(model[3]) > 200.0f)
+        return false;
+    out.full_height = quad[1] >= 1079.0f;
+    return true;
+}
+
+// (private live-size spike) The game's 16:9 view in the picture (host/hos_main.c wonder_view_rect), asked once a frame.
+struct WonderViewRect { bool fresh = false; float x = 0, y = 0; };
+WonderViewRect wonder_view_rect() {
+    static std::mutex mu;
+    static uint64_t frame_was = ~0ull;
+    static WonderViewRect r;
+    if (!host || host->version < 36 || !host->ab_value) return {};
+    const uint64_t frame = texture_frame_no();
+    std::lock_guard lk(mu);
+    if (frame != frame_was) {
+        frame_was = frame;
+        const int age = host->ab_value("WONDER_VIEW_AGE", 1 << 20);
+        r.fresh = age >= 0 && age <= 3;
+        r.x = host->ab_value("WONDER_VIEW_X", 0) / 1e6f;
+        r.y = host->ab_value("WONDER_VIEW_Y", 0) / 1e6f;
+    }
+    return r;
+}
+
+// (private live-size spike, HOS_WONDER_SCREEN_LOG=1) Which programs draw, as they start and stop: "wonder-screen: +key" when a
+// program draws after 30 frames without, "-key" after 30 frames without it. The harness reads these as each screen's marker.
+void wonder_screen_note(const Program& p, const Targets& at) {
+    static const bool on = getenv("HOS_WONDER_SCREEN_LOG") != nullptr;
+    if (!on) return;
+    struct Seen { uint64_t last; bool on; uint32_t w, h; };
+    static std::mutex mu;
+    static std::unordered_map<uint64_t, Seen> seen;
+    static uint64_t frame_was = 0;
+    static int lines = 0;
+    const uint64_t frame = texture_frame_no();
+    std::lock_guard lk(mu);
+    if (frame != frame_was) {
+        frame_was = frame;
+        for (auto& [key, e] : seen)
+            if (e.on && frame > e.last + 30) {
+                e.on = false;
+                if (lines++ < 40000) logf("wonder-screen: -%016llx frame=%llu", (unsigned long long)key, (unsigned long long)frame);
+            }
+    }
+    Seen& e = seen[p.key];
+    e.last = frame;
+    if (!e.on) {
+        e.on = true;
+        if (lines++ < 40000)
+            logf("wonder-screen: +%016llx frame=%llu at=%ux%u s0=%llux%llu", (unsigned long long)p.key, (unsigned long long)frame,
+                 at.width, at.height, (unsigned long long)(dw().sampled_sizes[0] & 0xffffffff),
+                 (unsigned long long)(dw().sampled_sizes[0] >> 32));
+    }
+}
+
+// (private live-size spike) Where a layout draw sits on the 1920 x 1080 canvas (units, y up): pictures and fills from their
+// uniform (+0x40 the model, +0x210 the quad's size and corner; probe run 2026-11-28, settings at 1080x1920), glyphs from
+// theirs (+0x0, the text's origin in units of 1.01 x 1.79 canvas units, constant across window sizes). Others: unknown.
+struct WonderBox { float cx = 0, cy = 0, x0 = 0, x1 = 0, y0 = 0, y1 = 0; };
+bool wonder_layout_box(const NvnState& s, const Program& p, WonderBox& b) {
+    const auto& u = s.ubo[0][0];
+    if (!u.addr) return false;
+    switch (p.key) {
+    case 0xde55dda9ee11d53aULL: case 0x59d456a771f4bd6dULL: case 0xf5af8e0021111a48ULL: case 0x4ec3eb6f3380885fULL:
+    case 0x3678d4e334c59348ULL: {
+        float t[8]{};
+        if (u.size < sizeof t || !ub_read(u.addr, t, sizeof t) || std::abs(t[0]) < 0.5f || std::abs(t[5]) < 0.5f) return false;
+        b.cx = b.x0 = b.x1 = t[3] / t[0];
+        b.cy = b.y0 = b.y1 = t[7] / -t[5];
+        return true;
+    }
+    default: break;
+    }
+    if (u.size < 0x220) return false;
+    float m[8]{}, q[4]{};
+    if (!ub_read(u.addr + 0x40, m, sizeof m) || !ub_read(u.addr + 0x210, q, sizeof q)) return false;
+    const float ax = m[3] + m[0] * q[2], bx = m[3] + m[0] * (q[2] + q[0]);
+    const float ay = m[7] + m[5] * q[3], by = m[7] + m[5] * (q[3] - q[1]);
+    b.x0 = std::min(ax, bx), b.x1 = std::max(ax, bx), b.y0 = std::min(ay, by), b.y1 = std::max(ay, by);
+    b.cx = 0.5f * (b.x0 + b.x1), b.cy = 0.5f * (b.y0 + b.y1);
+    return true;
+}
+
+// The card is one run from the picture frame to the map HUD. A crop/backing shader may
+// split that run into several passes to the same scene. Don't move the mask in its own target.
+struct WonderMapCard {
+    uint64_t frame = 0;
+    uint32_t target = 0;
+    float cx = 0, cy = 0;
+    bool active = false;
+};
+TLS_OBJECT(wonder_map_card, WonderMapCard)
+
+// (private live-size spike) HOS_WONDER_DRAWLOG=<file>: on while the file's first byte is '1', read once a frame. The present also
+// logs the frame's passes then (vk_replay.cpp, with RX_VK_PASS_TRACE=1).
+}   // namespace (wonder_draw_log_on is the renderer's: vk_replay.cpp calls it)
+bool wonder_draw_log_on() {
+    static const char* path = getenv("HOS_WONDER_DRAWLOG");
+    if (!path) return false;
+    static std::atomic<uint64_t> frame_was{~0ull};
+    static std::atomic<bool> on{false};
+    const uint64_t frame = texture_frame_no();
+    if (frame_was.exchange(frame) != frame) {
+        bool v = false;
+        if (FILE* f = fopen(path, "r")) {
+            v = fgetc(f) == '1';
+            fclose(f);
+        }
+        on = v;
+    }
+    return on;
+}
+namespace {
+// (private live-size spike, HOS_WONDER_DRAWLOG=<file>) While the file's first byte is '1', every draw of the frame, one line
+// each: program, target, the game's viewport and scissor, the layout mapping applied and the viewport that results, the
+// sampled sizes, and the vertex stage's first uniform buffer (+0x0 16 words, +0x40 8, +0x200 8) and the fragment stage's
+// (+0x0 8): what draws a screen, where, and with which constants. Read once a frame; at most 3000 lines a frame.
+static void wonder_draw_log(const NvnState& s, const Targets& at, const Program& p, bool mesh, float ui_scale, float ui_x, float ui_y,
+                            float ui_left, float ui_top, bool hud, float vx, float vy, float vw, float vh) {
+    if (!wonder_draw_log_on()) return;
+    static std::mutex mu;
+    static uint64_t frame_was = ~0ull;
+    static int lines = 0;
+    const uint64_t frame = texture_frame_no();
+    {
+        std::lock_guard lk(mu);
+        if (frame != frame_was) frame_was = frame, lines = 0;
+        if (lines++ >= 3000) return;
+    }
+    float v0[16]{}, v40[8]{}, v200[8]{}, f0[8]{};
+    const auto& u = s.ubo[0][0];
+    if (u.addr && u.size >= 0x40) ub_read(u.addr, v0, sizeof v0);
+    if (u.addr && u.size >= 0x60) ub_read(u.addr + 0x40, v40, sizeof v40);
+    if (u.addr && u.size >= 0x220) ub_read(u.addr + 0x200, v200, sizeof v200);
+    const auto& uf = s.ubo[1][0];
+    if (uf.addr && uf.size >= 0x20) ub_read(uf.addr, f0, sizeof f0);
+    char line[1400];
+    int n = snprintf(line, sizeof line,
+                     "wonder-draw: frame=%llu key=%016llx at=%ux%u n%d c0=%llx mesh=%d s0=%llux%llu s1=%llux%llu vp=%.0f,%.0f,%.0f,%.0f "
+                     "sc=%d,%d,%d,%d ui=%.3f x%.3f y%.3f l%.0f t%.0f hud%d -> %.0f,%.0f,%.0f,%.0f u0size=%llu",
+                     (unsigned long long)frame, (unsigned long long)p.key, at.width, at.height, at.n,
+                     (unsigned long long)(at.n && at.color[0] ? at.color[0]->gpu : 0), (int)mesh,
+                     (unsigned long long)(dw().sampled_sizes[0] & 0xffffffff), (unsigned long long)(dw().sampled_sizes[0] >> 32),
+                     (unsigned long long)(dw().sampled_sizes[1] & 0xffffffff), (unsigned long long)(dw().sampled_sizes[1] >> 32),
+                     s.viewport[0][0], s.viewport[0][1], s.viewport[0][2], s.viewport[0][3], s.scissor[0], s.scissor[1], s.scissor[2],
+                     s.scissor[3], ui_scale, ui_x, ui_y, ui_left, ui_top, (int)hud, vx, vy, vw, vh, (unsigned long long)u.size);
+    n += snprintf(line + n, sizeof line - n, " g0=%llx g1=%llx v0=", (unsigned long long)dw().sampled_gpu[0],
+                  (unsigned long long)dw().sampled_gpu[1]);
+    for (float x : v0) n += snprintf(line + n, sizeof line - n, "%.3g,", x);
+    n += snprintf(line + n, sizeof line - n, " v40=");
+    for (float x : v40) n += snprintf(line + n, sizeof line - n, "%.4g,", x);
+    n += snprintf(line + n, sizeof line - n, " v200=");
+    for (float x : v200) n += snprintf(line + n, sizeof line - n, "%.4g,", x);
+    n += snprintf(line + n, sizeof line - n, " f0=");
+    for (float x : f0) n += snprintf(line + n, sizeof line - n, "%.3g,", x);
+    logf("%s", line);
+}
+
+// The map draws the counters as separate panes (unlike the course HUD). The first
+// 44x88 bar section at the canvas's left edge opens the group. Every bar segment,
+// icon and digit then uses one viewport. The course card and lower map prompts do not.
+bool wonder_map_hud(Pass& ps, const NvnState& s, const Program& p) {
+    constexpr float kMapBarX = -wonder_plan::kLayoutW * 0.5f;
+    constexpr float kMapBarY = 475.0f;
+    constexpr float kMapGroupRight = -580.0f;
+    constexpr float kMapGroupBottom = 440.0f, kMapGroupTop = 520.0f;
+    const auto& u = s.ubo[0][0];
+    if (u.size >= 0x220 && (p.key == 0x17eae0d5631a64d9ULL || p.key == 0xd882b3cd96787bbaULL ||
+                            p.key == 0x46cbdd20fb67741aULL)) {
+        float m[8]{};
+        if (!ub_read(u.addr + 0x40, m, sizeof m)) return false;
+        if (wonder_sampled_size(0, 44, 88) && m[3] == kMapBarX && m[7] == kMapBarY)
+            return ps.wonder_map_hud = true;
+        return ps.wonder_map_hud && m[3] >= kMapBarX && m[3] <= kMapGroupRight &&
+               m[7] >= kMapGroupBottom && m[7] <= kMapGroupTop;
+    }
+    // Glyph transforms here are pre-scaled by the font's basis; the measured
+    // translations remain the same even for hidden (zero-scale) counters.
+    constexpr float kMapGlyphX = -600.0f, kMapGlyphYMin = 825.0f, kMapGlyphYMax = 860.0f;
+    if (ps.wonder_map_hud && u.size == 128 && (p.key == 0x59d456a771f4bd6dULL || p.key == 0xde55dda9ee11d53aULL ||
+                                               p.key == 0xf5af8e0021111a48ULL || p.key == 0x4ec3eb6f3380885fULL)) {
+        float g[8]{};
+        return ub_read(u.addr, g, sizeof g) && g[3] <= kMapGlyphX && g[7] >= kMapGlyphYMin && g[7] <= kMapGlyphYMax;
+    }
+    return false;
+}
+
 /// p: the draw's program, for its dynamic write masks and layout viewport
 void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, bool mesh,
-                   const Program& p, std::array<float, 2>& pause_clip) {
+                   const Program& p, std::array<float, 4>& pause_clip) {
+    if (int phase = tier_draw_phase(); phase >= 0) tier_draw(s, at, p, phase);
+    wonder_drawn_note(s, at);
+    wonder_screen_note(p, at);
     Pass& ps = pass();   // (once: the accessor is a call and a thread-local read at each use. The same object for the thread's life: draw_begin_recording resets it in place)
     CmdBound& cb = bound();   // (once, as the pass)
     float df[kDynF];
     uint32_t du[kDynU];
     uint8_t db[160];
-    const float ui_scale = mesh ? 1.0f : wonder_ui_scale(s, at, p);
+    Targets live_at = at;   // (private live-size spike: the window image is larger than the rendered rectangle)
+    if (host && host->version >= 44 && host->wonder_wide_size) {
+        const uint64_t live = host->wonder_wide_size();
+        const uint32_t lw = (uint32_t)live, lh = (uint32_t)(live >> 32);
+        if (lw && lh && at.width >= lw && at.height >= lh && (uint32_t)s.viewport[0][2] == lw && (uint32_t)s.viewport[0][3] == lh)
+            live_at.width = lw, live_at.height = lh;
+    }
+    const float ui_scale = mesh ? 1.0f : wonder_ui_scale(s, live_at, p);
     float ui_shift = ui_scale < 1.0f ? ps.wonder_pause_left : 0.0f;
     if (ui_scale < 1.0f && p.key == 0x17eae0d5631a64d9ULL && wonder_sampled_size(0, 72, 72)) {
         // The selection pointer is drawn later, after the course info pass.
@@ -5562,27 +5873,214 @@ void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, Vk
         if (at.color[0] && pause.target == at.color[0]->id && pause.frame == texture_frame_no())
             ui_shift = pause.shift;
     }
-    const float ui_x = std::min(ui_scale, 1.0f), ui_y = std::min(1.0f / ui_scale, 1.0f);
-    const bool top_left_hud = ui_scale != 1.0f && wonder_top_left_hud(ps, s, at, p);
-    const float ui_left = top_left_hud ? 0.0f : at.width * (1.0f - ui_x) * 0.5f + ui_shift;
-    const float ui_top = top_left_hud ? 0.0f : at.height * (1.0f - ui_y) * 0.5f;
+    float ui_x = std::min(ui_scale, 1.0f), ui_y = std::min(1.0f / ui_scale, 1.0f);
+    const bool pause_backdrop = !mesh && ui_scale == 1.0f && p.key == 0xfc83575fd66091b9ULL &&
+        wonder_native_ui_target(live_at) && wonder_sampled_size(0, 2, 2) && wonder_sampled_size(1, 640, 640);
+    WonderPauseLayout* pause_layout = nullptr;
+    if ((ui_scale > 1.0f || pause_backdrop) && live_at.width * 9 < live_at.height * 16 && at.n && at.color[0]) {
+        WonderPauseLayout& state = wonder_pause_layout();
+        const auto frame = texture_frame_no();
+        const auto target = at.color[0]->id;
+        if (pause_backdrop) state = {frame, target, false};
+        if (state.frame == frame && state.target == target) pause_layout = &state;
+    }
+    const bool top_left_hud = !pause_layout && ui_scale != 1.0f && wonder_top_left_hud(ps, s, live_at, p);
+    float ui_key = ui_scale;   // (the dynamic-state cache's key for the layout mapping)
+    if (ui_scale != 1.0f) {   // (private live-size spike, RX_VK_WONDER_UI_LOG=1: each squeezed UI draw's kind, once)
+        static const bool ui_log = getenv("RX_VK_WONDER_UI_LOG") != nullptr;
+        static std::mutex ui_log_mu;
+        static std::set<std::string> ui_seen;
+        if (ui_log) {
+            float model[8]{};
+            const auto& u = s.ubo[0][0];
+            if (u.addr && u.size >= 0x40 + sizeof model) ub_read(u.addr + 0x40, model, sizeof model);
+            // (one line per program, sampled sizes, window size and layout place to 16 units: animated values do not fill the
+            // log. The uniform's +0x200 words, where a band material keeps its width, are shown too)
+            float band[8]{};
+            if (u.addr && u.size >= 0x220) ub_read(u.addr + 0x200, band, sizeof band);
+            char key[200], line[600];
+            snprintf(key, sizeof key, "%016llx %ux%u %llx %llx %d %d %.2f %.2f", (unsigned long long)p.key, live_at.width, live_at.height,
+                     (unsigned long long)dw().sampled_sizes[0], (unsigned long long)dw().sampled_sizes[1], (int)(model[3] / 16),
+                     (int)(model[7] / 16), model[0], model[5]);
+            snprintf(line, sizeof line, "key=%016llx at=%ux%u s0=%llux%llu s1=%llux%llu model=%.3f,%.3f,%.3f,%.1f/%.3f,%.3f,%.3f,%.1f vp=%.0f,%.0f,%.0f,%.0f u200=%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f",
+                     (unsigned long long)p.key, live_at.width, live_at.height,
+                     (unsigned long long)(dw().sampled_sizes[0] & 0xffffffff), (unsigned long long)(dw().sampled_sizes[0] >> 32),
+                     (unsigned long long)(dw().sampled_sizes[1] & 0xffffffff), (unsigned long long)(dw().sampled_sizes[1] >> 32),
+                     model[0], model[1], model[2], model[3], model[4], model[5], model[6], model[7],
+                     s.viewport[0][0], s.viewport[0][1], s.viewport[0][2], s.viewport[0][3],
+                     band[0], band[1], band[2], band[3], band[4], band[5], band[6], band[7]);
+            std::lock_guard lk(ui_log_mu);
+            if (ui_seen.size() < 20000 && ui_seen.emplace(key).second)
+                logf("wonder-ui: frame=%llu %s", (unsigned long long)texture_frame_no(), line);
+        }
+    }
+    if (top_left_hud) {
+        // The gameplay HUD's own scale (private live-size spike): wonder_hud_scale. Its 1920 x 1080 layout box at that
+        // scale, docked at the window's top-left corner.
+        const float k = wonder_hud_scale(live_at.width, live_at.height);
+        ui_x = 1920.0f * k / (float)live_at.width;
+        ui_y = 1080.0f * k / (float)live_at.height;
+        ui_key = -k;
+    }
+    float ui_left = top_left_hud ? 0.0f : live_at.width * (1.0f - ui_x) * 0.5f + ui_shift;
+    float ui_top = top_left_hud ? 0.0f : live_at.height * (1.0f - ui_y) * 0.5f;
+    const bool map_hud = ui_scale != 1.0f && !top_left_hud && wonder_map_hud(ps, s, p);
+    if (map_hud) {
+        const auto plan = wonder_plan::plan((float)live_at.width, (float)live_at.height);
+        ui_left = plan.map_hud_x;
+        ui_top = plan.map_hud_y;
+        ui_key += 5000.0f;
+    }
+    if (ui_scale != 1.0f && !top_left_hud && !map_hud) {
+        // (private live-size spike) During play the layout belongs to the game's own 16:9 view, which the camera's projection
+        // puts where the course bounds let it, not always in the middle (a tall window shows it at the bottom: the floor stays
+        // where it was). Speech bubbles and the iris follow the world they point at only if the layout goes there too. In a
+        // menu or a load the camera does not run, the place is stale, and the layout stays centred.
+        WonderViewRect r = wonder_view_rect();
+        if (r.fresh) {
+            ui_left = live_at.width * r.x + ui_shift;
+            ui_top = live_at.height * r.y;
+            ui_key += 4.0f * r.x + 16.0f * r.y;   // (the dynamic-state cache's key: a new place is new state)
+        }
+        // (private live-size spike: A4 and A6) A band across the whole layout (a menu's header and footer bars, its panel
+        // and hatch stripes, a full-layout fill) spans the window's width; one as high as the layout fills its height too. The
+        // rest of the screen (lists, text, buttons) stays in the centred 16:9 layout. Bars keep their height in the layout:
+        // build 3 docked them at the top and bottom edges of tall windows, and the title and prompts drawn over them (glyph
+        // programs, not bands) stayed behind: a split group.
+        WonderBand band;
+        const bool band_hit = wonder_full_width_band(s, p, band);
+        if (band_hit) {
+            ui_x = 1.0f, ui_left = 0.0f;
+            if (band.full_height) ui_y = 1.0f, ui_top = 0.0f;
+            ui_key = 1000.0f + 10.0f * ui_y + ui_top / std::max(1.0f, (float)live_at.height);   // (its own cache key)
+        }
+        // (private live-size spike: A6, wonder_plan.h) The menu chrome docks to the window's edges, each group whole: a header
+        // bar (a band whose top is the canvas's top) and the draws after it in its band (the title, its cached shadow) move to
+        // the top edge; a footer bar and its prompts to the bottom edge, the prompts (its right half) also to the right edge.
+        // In a tall window the pause screen's panel and its details are two groups, each placed by the plan.
+        const wonder_plan::Plan plan = wonder_plan::plan((float)live_at.width, (float)live_at.height);
+        WonderBox b;
+        const bool known = wonder_layout_box(s, p, b);
+        if (band_hit && !band.full_height && known)
+            ps.wonder_dock = b.y1 >= 539.0f ? 1 : b.y0 <= -539.0f ? 2 : 0;
+        else if (ps.wonder_dock && known && !(ps.wonder_dock == 1 ? b.cy >= 400.0f : b.cy <= -440.0f))
+            ps.wonder_dock = 0;
+        if (ps.wonder_dock == 2 && known && !band_hit) ps.wonder_dock_right = b.cx > 0.0f;
+        if (ps.wonder_dock == 1 && plan.header_dy != 0.0f) {
+            ui_top += plan.header_dy;
+            ui_key += 2000.0f;
+        } else if (ps.wonder_dock == 2 && (plan.footer_dy != 0.0f || plan.prompts_dx != 0.0f)) {
+            ui_top += plan.footer_dy;
+            if (!band_hit && ps.wonder_dock_right) ui_left += plan.prompts_dx;
+            ui_key += 3000.0f;
+        }
+    }
+    if (pause_layout) {
+        const auto plan = wonder_plan::plan((float)live_at.width, (float)live_at.height);
+        WonderBox box;
+        const bool controls = (p.key == 0x17eae0d5631a64d9ULL && wonder_sampled_size(0, 72, 72)) ||
+                              p.key == 0x1c8d131150e8ad07ULL ||
+                              (wonder_layout_box(s, p, box) && box.cx < wonder_plan::kPauseSplitUnits && box.cy < -400.0f);
+        // The preview frame starts the details, before the offscreen course-title draws.
+        // Back/Select and the cursor still belong to the controls.
+        if (p.key == 0x090a7e2988df84a8ULL || p.key == 0x3d70b798dc89fea8ULL) pause_layout->details = true;
+        const bool details = pause_layout->details && !controls;
+        const float k = details ? plan.k : plan.pause_k;
+        ui_x = wonder_plan::kLayoutW * k / (float)live_at.width;
+        ui_y = wonder_plan::kLayoutH * k / (float)live_at.height;
+        ui_left = plan.ex;
+        ui_top = details ? plan.pause_detail_top : plan.pause_top;
+        ui_key = 4000.0f + 10.0f * details + ui_x + 0.001f * ui_y;
+    }
+    bool card_clip = false;
+    if (!mesh && !pause_layout && !top_left_hud && wonder_native_ui_target(live_at) && at.n && at.color[0]) {
+        auto& card = wonder_map_card();
+        const auto frame = texture_frame_no();
+        const auto target = at.color[0]->id;
+        if (p.key == 0x76644328dc442686ULL && wonder_sampled_size(0, 88, 276)) {
+            WonderBox box;
+            // The frame is two pieces cut from the same atlas; the first is 342 units wide.
+            if (wonder_layout_box(s, p, box) && std::abs((box.x1 - box.x0) - 342.0f) < 1.0f)
+                card = {frame, target, box.cx + 44.0f, box.cy, true};
+        }
+        if (map_hud) card.active = false;
+        if (card.active && card.frame == frame && card.target == target && wonder_pause_clip_program(p.key)) {
+            const float w = (float)live_at.width, h = (float)live_at.height;
+            const auto dst = wonder_plan::map_card(w, h, wonder_plan::plan(w, h), card.cx, card.cy);
+            ui_x = wonder_plan::kLayoutW * dst.k / w;
+            ui_y = wonder_plan::kLayoutH * dst.k / h;
+            ui_left = dst.x, ui_top = dst.y;
+            card_clip = std::abs(ui_left) > 0.01f || std::abs(ui_top) > 0.01f || ui_x != 1.0f || ui_y != 1.0f;
+            ui_key = 6000.0f + ui_x + 0.001f * ui_y;
+            if (p.key == 0x17eae0d5631a64d9ULL && wonder_sampled_size(0, 48, 48)) {
+                WonderBox box;
+                if (wonder_layout_box(s, p, box) && box.cy < card.cy && std::abs(box.cx - card.cx) > 150.0f)
+                    card.active = false; // the final difficulty star
+            }
+        }
+    }
+    // (private live-size spike: A4) The iris: four quadrants of 8 x 8 texels scaled to 1920 units each around its centre
+    // (17eae0d5 sampling 8 x 8, model scale 240: the character select's and the course's), drawn in the layout. The layout's
+    // viewport clipped them to the 16:9 canvas; their clip space now covers the whole window and each vertex keeps its place.
+    // Each quadrant reaches about 1985 units from the centre, short of a tall window's far edge when the iris centre sits low
+    // (the course's view at the window's bottom: build 3's probe showed the world above it). So each one also grows outward
+    // by kWonderIrisReach about its inner edges (the ends of its ranges nearest the centre): the hole at the centre keeps its
+    // size and place (the 256 x 256 circle between the quadrants).
+    constexpr float kWonderIrisReach = 4.0f;
+    bool widen = false;
+    float iris_in[2]{}, iris_f = 1.0f;   // (the quadrant's inner edges, layout units; its growth)
+    // The circle between them (17eae0d5 sampling 256 x 256 at the same scale) gets the same clip space without growing: a
+    // tall window's canvas sits low in the window, and the open circle's corners above it were cut (build 4's probe: a band of
+    // world over the circle).
+    const bool iris_circle = p.key == 0x17eae0d5631a64d9ULL && wonder_sampled_size(0, 256, 256);
+    if (ui_scale != 1.0f && !top_left_hud && p.key == 0x17eae0d5631a64d9ULL && (wonder_sampled_size(0, 8, 8) || iris_circle)) {
+        float m[8]{}, q[4]{};
+        const auto& u = s.ubo[0][0];
+        widen = u.addr && u.size >= 0x220 && ub_read(u.addr + 0x40, m, sizeof m) && ub_read(u.addr + 0x210, q, sizeof q) &&
+                std::abs(m[0]) >= 50.0f && std::abs(m[1]) < 0.01f;
+        if (widen && !iris_circle) {   // (model space: x from q[2] to q[2] + q[0], y from q[3] - q[1] to q[3]; nearest 0 is the inner end)
+            const float x0 = q[2], x1 = q[2] + q[0], y0 = q[3] - q[1], y1 = q[3];
+            const float xi = std::abs(x0) < std::abs(x1) ? x0 : x1, yi = std::abs(y0) < std::abs(y1) ? y0 : y1;
+            iris_in[0] = m[3] + m[0] * xi, iris_in[1] = m[7] + m[5] * yi;
+            iris_f = kWonderIrisReach;
+        }
+    }
     float vx = s.viewport[0][0], vy = s.viewport[0][1], vw = s.viewport[0][2], vh = s.viewport[0][3];
     if (vw == 0.0f && vh == 0.0f) vx = 0, vy = 0, vw = (float)at.width, vh = (float)at.height;
     vx = vx * ui_x + ui_left;
     vy = vy * ui_y + ui_top;
     vw *= ui_x;
     vh *= ui_y;
-    const bool expand_pause_clip = ui_shift < 0.0f && !top_left_hud && vx > 0.0f &&
+    const bool expand_pause_clip = !widen && ui_shift < 0.0f && !top_left_hud && vx > 0.0f &&
                                    wonder_pause_clip_program(p.key);
     if (expand_pause_clip) {
         // Widen clip space to the screen edge while retaining each vertex's screen position.
         const float expanded_width = vw + vx;
-        pause_clip = {vw / expanded_width, vx / expanded_width};
+        pause_clip = {vw / expanded_width, vx / expanded_width, 1.0f, 0.0f};
         vx = 0.0f;
         vw = expanded_width;
     }
-    const int nb = dyn_pack(s, at, topo, mesh, program_wm_sig(p), ui_scale, ui_left, ui_top,
-                            expand_pause_clip, df, du, db);
+    if (widen) {
+        // The whole target, both axes, each pixel X of the layout's mapping moved to P + f (X - P), P the quadrant's inner
+        // edge in pixels: x' = x f vw / W + (2 P (1 - f) + f (2 vx + vw)) / W - 1; y' likewise with NVN's y up.
+        const float tw = (float)at.width, th = (float)at.height, f = iris_f;
+        const float px = vx + (iris_in[0] + 960.0f) / 1920.0f * vw, py = vy + (540.0f - iris_in[1]) / 1080.0f * vh;
+        pause_clip = {f * vw / tw, (2.0f * px * (1.0f - f) + f * (2.0f * vx + vw)) / tw - 1.0f, f * vh / th,
+                      1.0f - (2.0f * py * (1.0f - f) + f * (2.0f * vy + vh)) / th};
+        vx = 0.0f, vy = 0.0f, vw = tw, vh = th;
+        ui_key += 9000.0f;
+    }
+    if (card_clip) {
+        // Transform in clip space so a source vertex outside the old canvas can re-enter the picture.
+        const float tw = (float)at.width, th = (float)at.height;
+        pause_clip = {vw / tw, (2.0f * vx + vw) / tw - 1.0f,
+                      vh / th, 1.0f - (2.0f * vy + vh) / th};
+        vx = vy = 0.0f, vw = tw, vh = th;
+    }
+    const int clip_mode = card_clip ? 3 : widen ? 2 : expand_pause_clip ? 1 : 0;
+    wonder_draw_log(s, at, p, mesh, ui_scale, ui_x, ui_y, ui_left, ui_top, top_left_hud, vx, vy, vw, vh);
+    const int nb = dyn_pack(s, at, topo, mesh, program_wm_sig(p), ui_key, ui_left, ui_top,
+                            clip_mode, df, du, db);
     if (!dump_on() && cb.dyn_valid && cb.dyn_fast.on && cb.dyn_fast.nb == nb &&
         dyn_same(df, kDynF, du, kDynU, db, nb, cb.dyn_fast.fp, cb.dyn_fast.up, cb.dyn_fast.raw)) {
         ps.wm_or |= cb.dyn_fast.wm0, ps.wm_n = cb.dyn_fast.wm_n;   // (the pass trace still sees the masks)
@@ -5615,7 +6113,7 @@ void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, Vk
         const int32_t x1 = std::min<int32_t>(s.scissor[0] + s.scissor[2], (int32_t)at.width);
         const int32_t y1 = std::min<int32_t>(s.scissor[1] + s.scissor[3], (int32_t)at.height);
         d.sc = {{x0, y0}, {(uint32_t)std::max(0, x1 - x0), (uint32_t)std::max(0, y1 - y0)}};
-        if (ui_scale != 1.0f) {
+        if (ui_scale != 1.0f && !widen && !card_clip) {
             // Pause controls slide in from the framebuffer edge, outside the centred canvas.
             const int32_t left = expand_pause_clip && x0 == 0 ? 0 :
                                  std::max(0l, std::lround(x0 * ui_x + ui_left));
@@ -9037,7 +9535,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
             logf("%s", line);
         }
     }
-    std::array<float, 2> pause_clip{1.0f, 0.0f};
+    std::array<float, 4> pause_clip{1.0f, 0.0f, 1.0f, 0.0f};
     {
         FINE_SCOPE(FT_DYN);
         dynamic_state(cmd, s, at, topo, d.mesh && !p.fallback, p, pause_clip);
@@ -12666,6 +13164,45 @@ UniformUpload uniform_upload(uint64_t size) {
     const uint64_t at = stream_alloc(size, align);
     if (at == UINT64_MAX) return {};
     return {{cur->stream, at, size, 0}, cur->mapped + at, cur->stream_alloc};
+}
+
+// (private live-size spike) The present's crop while the window's size changes: the game sets its crop to a new render size at
+// once, while what it draws can stay at the size before for some frames; presented with the new crop, that picture sat in a
+// corner. For kWonderCropSettle presents after the crop or the texture changed size, a frame whose draws reached less than the
+// crop shows what they reached, scaled to the window, instead. Each such frame is logged.
+bool wonder_live_drawn_crop(uint64_t gpu, uint32_t tw, uint32_t th, const int crop[4], int out[4]) {
+    const bool on = wonder_window_live();
+    static const bool fix = !getenv("HOS_WONDER_DRAWN_CROP") || atoi(getenv("HOS_WONDER_DRAWN_CROP"));
+    if (!on || !crop || crop[2] <= 0 || crop[3] <= 0 || crop[0] || crop[1]) return false;
+    constexpr int kWonderCropSettle = 240;
+    static int settle = 0;
+    static int was[2] = {0, 0};
+    static uint32_t was_t[2] = {0, 0};
+    if (was[0] != crop[2] || was[1] != crop[3] || was_t[0] != tw || was_t[1] != th) {
+        was[0] = crop[2], was[1] = crop[3], was_t[0] = tw, was_t[1] = th;
+        settle = kWonderCropSettle;
+    }
+    if (settle <= 0) return false;
+    settle--;
+    WonderDrawnSlot& d = wonder_drawn[(gpu >> 12) % 8];
+    const uint64_t frame = d.frame.load(), now = texture_frame_no();
+    if (settle >= kWonderCropSettle - 6) {   // (what the first presents after a change got drawn over, matching or not)
+        static int said = 0;
+        if (said++ < 200)
+            logf("live: present frame=%llu texture %ux%u crop %dx%d: drawn %ux%u in frame %llu (slot %s)", (unsigned long long)now, tw,
+                 th, crop[2], crop[3], d.w.load(), d.h.load(), (unsigned long long)frame, d.gpu.load() == gpu ? "this texture's" : "another's");
+    }
+    if (d.gpu.load() != gpu) return false;
+    if (frame + 2 < now) return false;
+    const uint32_t w = d.w.load(), h = d.h.load();
+    if (!w || !h || w > tw || h > th || (w >= (uint32_t)crop[2] && h >= (uint32_t)crop[3])) return false;
+    static int told = 0;
+    if (told++ < 400)
+        logf("live: present frame=%llu texture %ux%u crop %dx%d drawn %ux%u%s", (unsigned long long)now, tw, th, crop[2], crop[3],
+             w, h, fix ? ": the drawn part shown" : "");
+    if (!fix) return false;
+    out[0] = 0, out[1] = 0, out[2] = (int)std::min<uint32_t>(w, (uint32_t)crop[2]), out[3] = (int)std::min<uint32_t>(h, (uint32_t)crop[3]);
+    return true;
 }
 
 } // namespace mkwvk

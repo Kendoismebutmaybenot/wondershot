@@ -5301,6 +5301,49 @@ void texture_frame(uint64_t completed) {
     completed_value = completed;
     texture_complete_writes(completed);
     frame_no++;
+    if (frame_no % 30 == 0 && wonder_window_live()) {
+        // (private live-size spike) The scene arena's working set: the union of the byte ranges of its textures (a virtual
+        // pool's, GPU addresses from 1 TB) used in this present or the one before. Its most at each window size is logged when
+        // the window's size changes: what the arena has to hold at that size.
+        static uint64_t most = 0, most_n = 0;
+        static uint32_t at_w = 0, at_h = 0;
+        std::vector<std::pair<uint64_t, uint64_t>> r;
+        for (auto& kv : textures) {
+            const Texture* t = kv.second.get();
+            if (t->gpu >= (1ull << 40) && t->last_frame + 1 >= frame_no && t->guest_size) r.push_back({t->gpu, t->gpu + t->guest_size});
+        }
+        std::sort(r.begin(), r.end());
+        uint64_t total = 0, reach = 0;
+        for (auto [a, b] : r) {
+            a = std::max(a, reach);
+            if (b > a) total += b - a, reach = b;
+        }
+        const uint32_t w = dev.swap_extent.width, h = dev.swap_extent.height;
+        if (w != at_w || h != at_h) {
+            if (at_w) logf("live: scene arena working set at %ux%u: at most %.1f MiB (%llu textures)", at_w, at_h, most / 1048576.0,
+                           (unsigned long long)most_n);
+            at_w = w, at_h = h, most = 0, most_n = 0;
+        }
+        if (total > most) most = total, most_n = r.size();
+        if (frame_no % 1200 == 0) {   // (and what the textures hold by size, the largest kinds first: what stays after a return)
+            std::map<std::pair<uint32_t, uint32_t>, std::pair<uint64_t, uint64_t>> kinds;   // (w, h) -> count, bytes
+            uint64_t all = 0;
+            for (auto& kv : textures) {
+                const Texture* t = kv.second.get();
+                auto& k = kinds[{t->width, t->height}];
+                k.first++, k.second += t->bytes, all += t->bytes;
+            }
+            std::vector<std::pair<uint64_t, std::pair<uint32_t, uint32_t>>> big;
+            for (auto& [wh, v] : kinds) big.push_back({v.second, wh});
+            std::sort(big.rbegin(), big.rend());
+            char line[700];
+            int n = snprintf(line, sizeof line, "live: textures %.1f MiB in %zu:", all / 1048576.0, textures.size());
+            for (size_t i = 0; i < big.size() && i < 14 && n < 640; i++)
+                n += snprintf(line + n, sizeof line - n, " %ux%u x%llu %.1f;", big[i].second.first, big[i].second.second,
+                              (unsigned long long)kinds[big[i].second].first, big[i].first / 1048576.0);
+            logf("%s", line);
+        }
+    }
     drawn_writeback_frame();
     reuse_retire_frame();
     {   // (staging arenas the GPU is done with, beyond 256 MB of them, and any over 64 MB: freed. A scene change stages
@@ -5969,7 +6012,17 @@ void texture_frame(uint64_t completed) {
         // held is gone from that memory on the console too, and a draw that sampled it would take the memory's contents over its
         // texels (texture_touch). Within the budget the pass is a sweep that lets go of nothing the GPU did not draw over, and these
         // were never drawn over by a target: the game's own writes to the memory they stood in would keep every one for good
-        const bool obsolete = !overwritten && finalized_obsolete(*tex);
+        // (private live-size spike, HOS_WONDER_LIVE_TIER: a render target of 16 MB or more the game finalized and has not used
+        // for need_unused presents goes too. Wonder makes its scene and window targets again at the window's size; one of a size
+        // the window has left sits in arena or window-pool storage nothing draws over again, and was kept for good under the budget)
+        const bool live_spike = wonder_window_live();
+        // (above 4 MB, past keep_finalized's small ones: the sets the window's past sizes left were 78 targets of 1 to 16 MB as well,
+        // 85 render-target images at the start, 163 after the large sizes)
+        // (and a target in the scene arena (a virtual pool, GPU addresses from 1 TB) the GPU drew and nothing used for need_unused
+        // presents, finalized or not: build 1 kept a 2448x1848 one 2476 presents after the window left that size)
+        const bool past_size = live_spike && !overwritten && tex->gpu_written &&
+                               ((tex->released && tex->bytes > (4ull << 20)) || (tex->gpu >= (1ull << 40) && tex->bytes > (1ull << 20)));
+        const bool obsolete = (!overwritten && finalized_obsolete(*tex)) || past_size;
         if (by_hold && !overwritten && !obsolete) {
             const uint64_t to = vram_compact::hold_target(frame_no - last, need_unused, rule_to, hold_to, evict_to);
             if (to == UINT64_MAX || vram_compact::hold_met(total_bytes, hold_live, hold_dead, to)) continue;
@@ -5983,7 +6036,12 @@ void texture_frame(uint64_t completed) {
                      (unsigned long long)(keep_finalized_max >> 20), tex->id, (unsigned long long)tex->gpu, tex->width,
                      tex->height, tex->nvn_format, (unsigned long long)(frame_no - last));
         }
-        if (!overwritten && tex->gpu_written && !tex->released && frame_no - last < keep_rendered) continue;
+        // (private live-size spike: keep_rendered and the unflushable rule below are for textures that may still be wanted; an
+        // obsolete one is not, and they kept it: a past-size scene-arena target is live (not released) and GPU-written, so
+        // keep_rendered held it while VRAM had room, and VRAM after a return from the large sizes stayed 0.52 GiB above the
+        // start. drawn_once and baked stay as they were: they keep tables drawn once and sampled later, which a target redrawn
+        // every frame is not)
+        if (!obsolete && !overwritten && tex->gpu_written && !tex->released && frame_no - last < keep_rendered) continue;
         if (sweep && !overwritten && !obsolete) continue;
         // (longshot) nor a live texture the GPU drew whose texels cannot be written back into its memory (ASTC kept as BC3, sparse,
         // past the write-back's size, ...): its image is the only copy, and one made again over that storage is not uploaded (the
@@ -5992,7 +6050,7 @@ void texture_frame(uint64_t completed) {
         // default: the VRAM it costs is bounded (256 MB a texture) and a wrong texture is worse than a fuller budget.
         // RX_VK_EVICT_UNFLUSHABLE=1: evicted
         static const bool evict_unflushable = getenv("RX_VK_EVICT_UNFLUSHABLE") && atoi(getenv("RX_VK_EVICT_UNFLUSHABLE")) != 0;
-        if (!overwritten && tex->gpu_written && !tex->released && !evict_unflushable && tex->bytes < (256ull << 20) && !flushable(*tex)) {
+        if (!obsolete && !overwritten && tex->gpu_written && !tex->released && !evict_unflushable && tex->bytes < (256ull << 20) && !flushable(*tex)) {
             static std::atomic<int> kept_logged{0};
             if (kept_logged.fetch_add(1) < 40)
                 logf("vk: texture #%u %#llx %ux%u x%u NVN %#x the GPU drew kept, not evicted: its texels cannot be written back",
@@ -6016,7 +6074,16 @@ void texture_frame(uint64_t completed) {
         // (a texture the GPU drew that still holds the game's content goes into the game's memory first: made again later, it is
         // uploaded from there with what the GPU drew. Evicted without it, it comes back empty or stale: a terrain chunk dark, a
         // tiled pattern over the Deku Tree's planks and Hyrule Field's path)
-        evict.push_back({tex, !overwritten && tex->gpu_written && !tex->released && flushable(*tex), shifted, overwritten || obsolete});
+        // (an obsolete one is not written back: nothing reads its texels again, and a past-size arena target's write-back is
+        // up to 126 MB of guest memory touched for nothing)
+        evict.push_back({tex, !obsolete && !overwritten && tex->gpu_written && !tex->released && flushable(*tex), shifted, overwritten || obsolete});
+        if (obsolete && live_spike) {
+            static std::atomic<int> told{0};
+            if (told.fetch_add(1) < 200)
+                logf("live: texture #%u %#llx %ux%u (%llu KB) of a past size goes (unused for %llu presents%s)", tex->id,
+                     (unsigned long long)tex->gpu, tex->width, tex->height, (unsigned long long)(tex->bytes >> 10),
+                     (unsigned long long)(frame_no - last), tex->released ? ", finalized" : "");
+        }
         pending_bytes += tex->bytes + tex->pad;
         if (by_hold && !overwritten && !obsolete) hold_live += tex->bytes + tex->pad;
     }

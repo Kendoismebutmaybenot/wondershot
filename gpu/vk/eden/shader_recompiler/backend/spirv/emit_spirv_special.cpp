@@ -34,7 +34,14 @@ void TransformWonderPauseClip(EmitContext& ctx) {
     const Id x{ctx.OpCompositeExtract(type, position, 0u)};
     const Id w{ctx.OpCompositeExtract(type, position, 3u)};
     const Id expanded_x{ctx.OpFAdd(type, ctx.OpFMul(type, x, scale), ctx.OpFMul(type, w, bias))};
-    ctx.OpStore(ctx.output_position, ctx.OpCompositeInsert(ctx.F32[4], expanded_x, position, 0u));
+    // (private live-size spike) y as x: a draw's clip space can cover the whole window while each vertex keeps its place
+    const Id transform_y{ctx.OpLoad(ctx.F32[2], ctx.OpAccessChain(
+        pointer, ctx.rescaling_push_constants, ctx.Const(ctx.wonder_pause_clip_y_member_index)))};
+    const Id y{ctx.OpCompositeExtract(type, position, 1u)};
+    const Id expanded_y{ctx.OpFAdd(type, ctx.OpFMul(type, y, ctx.OpCompositeExtract(type, transform_y, 0u)),
+                                   ctx.OpFMul(type, w, ctx.OpCompositeExtract(type, transform_y, 1u)))};
+    const Id with_x{ctx.OpCompositeInsert(ctx.F32[4], expanded_x, position, 0u)};
+    ctx.OpStore(ctx.output_position, ctx.OpCompositeInsert(ctx.F32[4], expanded_y, with_x, 1u));
 }
 
 /// Output variable and the unscaled value it held before ScaleNoPerspectiveOutputs.

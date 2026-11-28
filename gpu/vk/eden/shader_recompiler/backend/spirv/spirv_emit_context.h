@@ -305,6 +305,7 @@ public:
     u32 rescaling_images_member_index{};
     u32 rescaling_downfactor_member_index{};
     u32 wonder_pause_clip_member_index{};
+    u32 wonder_pause_clip_y_member_index{};
     u32 guest_pages_member_index{};   // (longshot: GUEST_PAGES_PUSH_OFFSET's member, compute only)
     bool wants_guest_pages{};
     Id probe_log{};   // (EvilOOT, RX_VK_BLOCK_PROBE: the miss log's U32 storage buffer, per-block entry counters at word 128+)

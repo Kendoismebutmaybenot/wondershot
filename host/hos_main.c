@@ -1936,10 +1936,26 @@ void hos_oot_free_view(Ctx *c, uint64_t view) {
 }
 
 float hos_aspect_ratio = 0;   /* (the window's default shape: host/display.c) */
+int hos_wonder_window_aspect;   /* set before the renderer starts */
 /* (nx2/oot_wide.py) read by the widescreen patches in the game's code; 0: the game's own 16:9 */
 volatile uint64_t hos_wide_out, hos_wide_scene;
 volatile float hos_wide_ratio, hos_wide_squeeze, hos_wide_margin;
 uint64_t hos_wonder_wide_size;
+static float wonder_tall_scale = 1.0f;
+
+static float wonder_span_169;
+void hos_wonder_tall_span(Ctx *c) {
+    if (!hos_wonder_window_aspect) return;
+    float span;
+    memcpy(&span, c->vreg[1], sizeof span);
+    wonder_span_169 = span;   /* (private live-size spike: hos_wonder_cam_view) */
+    if (wonder_tall_scale == 1.0f) return;
+    span *= wonder_tall_scale;
+    memcpy(c->vreg[1], &span, sizeof span);
+    static int logged;
+    if (!__atomic_exchange_n(&logged, 1, __ATOMIC_RELAXED))
+        hos_log("boot: Wonder orthographic span widened vertically by %.4f", (double)wonder_tall_scale);
+}
 
 void hos_wonder_wide_display(Ctx *c, uint64_t args) {
     if (!hos_wonder_wide_size || recomp_load32(c, args + 20) != 3840 || recomp_load32(c, args + 24) != 2160)
@@ -1955,32 +1971,64 @@ static void wonder_wide_init(size_t image_size, unsigned width, unsigned height)
     /* Read by the default perspective camera and the routine that computes
        the horizontal bounds of the orthographic gameplay camera. */
     const size_t aspect_offset = 0x2c71b14;
-    int hos_output_handheld(void);
-    if (hos_output_handheld() || !hos_output_size_valid(width, height) || image_size < aspect_offset + sizeof(float)) return;
-    int hos_ini_option(const char *, int);
-    void hos_monitor_prepare(void);
-    int hos_monitor_screen_size(int *, int *);
-    int sw = 0, sh = 0;
-    hos_monitor_prepare();
-    if (!hos_monitor_screen_size(&sw, &sh)) {
-        sw = GetSystemMetrics(SM_CXSCREEN); sh = GetSystemMetrics(SM_CYSCREEN);
+    int follow_window = 0;
+#if defined(__linux__) && !defined(A64_MEM_ZERO)
+    uint64_t hos_wonder_window_pixels(void);
+    const uint64_t pixels = hos_wonder_window_pixels();
+    if (pixels) {
+        width = (uint32_t)pixels;
+        height = (uint32_t)(pixels >> 32);
+        follow_window = hos_wonder_window_aspect = 1;
     }
-    hos_wonder_output_size(&width, &height, hos_ini_option("ultrawide", 1),
-                           sw > 0 ? (unsigned)sw : 0, sh > 0 ? (unsigned)sh : 0);
+#endif
+    if (!follow_window) {
+        int hos_output_handheld(void);
+        if (hos_output_handheld() || !hos_output_size_valid(width, height) || image_size < aspect_offset + sizeof(float)) return;
+        int hos_ini_option(const char *, int);
+        void hos_monitor_prepare(void);
+        int hos_monitor_screen_size(int *, int *);
+        int sw = 0, sh = 0;
+        hos_monitor_prepare();
+        if (!hos_monitor_screen_size(&sw, &sh)) {
+            sw = GetSystemMetrics(SM_CXSCREEN); sh = GetSystemMetrics(SM_CYSCREEN);
+        }
+        hos_wonder_output_size(&width, &height, hos_ini_option("ultrawide", 1),
+                               sw > 0 ? (unsigned)sw : 0, sh > 0 ? (unsigned)sh : 0);
+    } else if (!hos_output_size_valid(width, height) || image_size < aspect_offset + sizeof(float)) return;
 
     uint8_t *const ratio_address = A64_MEM + IMAGE_BASE + aspect_offset;
     uint32_t original;
     memcpy(&original, ratio_address, sizeof original);
     if (original != 0x3fe38e3b) return;
 
-    hos_wonder_wide_fit(&width, &height);
+    if (follow_window) hos_wonder_wide_fit(&width, &height);
     const float ratio = (float)width / height;
+    if (follow_window) wonder_tall_scale = hos_wonder_vertical_span(width, height);
+    { void hos_wonder_view_boot(uint32_t, uint32_t); hos_wonder_view_boot(width, height); }
     memcpy(ratio_address, &ratio, sizeof ratio);
     hos_wonder_wide_size = (uint64_t)height << 32 | width;
     hos_wide_out = hos_wonder_wide_size;
     hos_wide_ratio = ratio;
     hos_aspect_ratio = ratio;
     hos_log("boot: Wonder native camera ratio %.4f", (double)ratio);
+}
+/* The default map perspective is passed through 0x803fe150 into the render-view
+   writer. Invalidate its own matrix before 0x800d0620 reads it, so the game
+   regenerates the projection and the render-view's dependent matrices. */
+static uint64_t wonder_map_perspective;
+void hos_wonder_map_perspective_created(Ctx *c) {
+    if (hos_wonder_window_aspect && recomp_load64(c, c->x[29] + 8) == 0x80857364)
+        __atomic_store_n(&wonder_map_perspective, c->x[19], __ATOMIC_RELEASE);
+}
+void hos_wonder_map_live_aspect(Ctx *c) {
+    const uint64_t projection = c->x[20];
+    if (!hos_wonder_window_aspect || !projection || recomp_load64(c, c->x[29] + 8) != 0x803fe150 ||
+        projection != __atomic_load_n(&wonder_map_perspective, __ATOMIC_ACQUIRE) ||
+        recomp_load64(c, projection) != 0x83970c90) return;
+    const uint32_t aspect = recomp_load32(c, 0x82c71b14); /* same size-derived aspect as hos_wonder_live_size */
+    if (recomp_load32(c, projection + 0xb0) == aspect) return;
+    recomp_store32(c, projection + 0xb0, aspect);
+    recomp_store8(c, projection + 8, 1); /* dirty flag tested by 0x800d0630 */
 }
 int hos_camera_trace_enabled(void) {
     FILE *marker = fopen("camera-clearance.trace", "rb");
@@ -2606,3 +2654,268 @@ int main(int argc, char **argv) {
     return 0;
 }
 #endif
+
+/* Drive the game's own render-size routine 0x801ac330 in Window mode. */
+#if !defined(__linux__)
+uint64_t hos_wonder_live_pixels(void) { return 0; }
+#endif
+uint64_t hos_wonder_window_ready(void);   /* (nvn_native.c) the window textures' size now, h << 32 | w; 0 before the first present */
+uint64_t hos_wonder_arena_take_high(void);   /* (nvn_native.c) the scene arena's highest end used since the last call */
+uint64_t hos_wonder_arena_take_peak(uint64_t *n);   /* (nvn_native.c) the most the arena's live textures held since the last call */
+int rx_option(int id, int otherwise);
+static volatile uint64_t wonder_live_applied, wonder_live_applied_window;
+/* The live picture's width and height factors against the game's 16:9 view, 1 at 16:9 (for the log). */
+static float wonder_view_w = 1.0f, wonder_view_h = 1.0f;
+static void wonder_view_factors(uint32_t w, uint32_t h) {
+    const float tall = hos_wonder_vertical_span(w, h);
+    wonder_view_h = tall;
+    wonder_view_w = tall * ((float)w / h) * (9.0f / 16.0f);
+}
+void hos_wonder_view_boot(uint32_t w, uint32_t h) { wonder_view_factors(w, h); }
+
+/* ---- The camera keeps the game's own 16:9 view (private live-size spike) ----
+   The gameplay camera 0x8043d320 (x19 its controller, x20 the course, x21 the camera) decides its position as at 16:9: no
+   hook changes what it reads, so a size change, larger or smaller, moves nothing it keeps across frames (the stored position
+   x21+0x28, written by 0x8043fe70 from x29-0x58 at 0x8043e240). The extra window shows only in the projection
+   (0x8043cbe0, its bounds at 0x8043cd54 relative to the eye): the larger view is moved off-centre so that it holds the 16:9
+   view whole, its bottom edge on the 16:9 view's bottom edge (a tall window shows more above the player, the floor stays
+   where it was), and is then kept inside the course bounds the camera clamps to, as far as it can while still holding the
+   16:9 view. So the player is wherever the game put it in its own view, at every size and on the frame the size changes.
+   Bounds, all in world units, min x/y and max x/y:
+     A    x19+0x38, +0x3c, +0x40, +0x44   (clamped at 0x8043dd98)
+     area x20+0x99c, +0x9a0, +0x9a4, +0x9a8 (each +-FLT_MAX for none; 0x8043dc70)
+     lock x20+0xb8, +0xbc, +0xc0, +0xc4   (with x20+0x742 == 1 and x20+0xc8 != 0; 0x8043e9c8) */
+typedef struct { uint64_t camera; float lo[2], hi[2]; int64_t frame; } wonder_cam_bounds;
+static wonder_cam_bounds wonder_cam[4];   /* (wonder_span_169: 0x8043cd40, the 16:9 vertical span, hos_wonder_tall_span) */
+static float wonder_load_f(Ctx *c, uint64_t a) { const uint32_t v = recomp_load32(c, a); float f; memcpy(&f, &v, 4); return f; }
+static int wonder_bound_ok(float v) { return v == v && v > -1e30f && v < 1e30f; }
+static void wonder_bounds_meet(float *lo, float *hi, float l, float h) {
+    if (wonder_bound_ok(l) && l > *lo) *lo = l;
+    if (wonder_bound_ok(h) && h < *hi) *hi = h;
+}
+void hos_wonder_cam_bounds(Ctx *c) {   /* after 0x8043e238: the position the camera stores is ready at x29-0x58 */
+    const uint64_t ctl = c->x[19], area = c->x[20], camera = c->x[21];
+    if (!camera) return;
+    float lo[2] = {-3e38f, -3e38f}, hi[2] = {3e38f, 3e38f};
+    const float al = wonder_load_f(c, ctl + 0x38), ab = wonder_load_f(c, ctl + 0x3c);
+    const float ar = wonder_load_f(c, ctl + 0x40), at = wonder_load_f(c, ctl + 0x44);
+    if (al < ar && ab < at) wonder_bounds_meet(&lo[0], &hi[0], al, ar), wonder_bounds_meet(&lo[1], &hi[1], ab, at);
+    wonder_bounds_meet(&lo[0], &hi[0], wonder_load_f(c, area + 0x99c), wonder_load_f(c, area + 0x9a4));
+    wonder_bounds_meet(&lo[1], &hi[1], wonder_load_f(c, area + 0x9a0), wonder_load_f(c, area + 0x9a8));
+    if (recomp_load8(c, area + 0x742) == 1 && recomp_load32(c, area + 0xc8)) {
+        const float ll = wonder_load_f(c, area + 0xb8), lb = wonder_load_f(c, area + 0xbc);
+        const float lr = wonder_load_f(c, area + 0xc0), lt = wonder_load_f(c, area + 0xc4);
+        if (ll <= lr && lb <= lt) wonder_bounds_meet(&lo[0], &hi[0], ll, lr), wonder_bounds_meet(&lo[1], &hi[1], lb, lt);
+    }
+    extern volatile LONG64 hos_present_count;
+    int slot = 0;
+    for (int i = 0; i < 4; i++) {
+        if (wonder_cam[i].camera == camera) { slot = i; break; }
+        if (wonder_cam[i].frame < wonder_cam[slot].frame) slot = i;
+    }
+    wonder_cam_bounds *b = &wonder_cam[slot];
+    const int changed = b->camera != camera || memcmp(b->lo, lo, sizeof lo) || memcmp(b->hi, hi, sizeof hi);
+    b->camera = camera;
+    memcpy(b->lo, lo, sizeof lo), memcpy(b->hi, hi, sizeof hi);
+    b->frame = hos_present_count;
+    if (changed) {
+        static int n;
+        if (n++ < 200)
+            hos_log("live: camera %#llx bounds x %.2f..%.2f y %.2f..%.2f (present %lld)", (unsigned long long)camera,
+                    (double)lo[0], (double)hi[0], (double)lo[1], (double)hi[1], (long long)hos_present_count);
+    }
+}
+static float wonder_clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
+/* Where the game's own 16:9 view sits in the picture, as fractions of it (left, top, width, height; y down), and the present
+   it was set at: the renderer maps the layout UI that belongs to the world (speech bubbles, the iris) onto it during play
+   (gpu/vk/vk_draw.cpp, through MkwVkHost.ab_value "WONDER_VIEW_*", host/rx_backend.c). Not set for some presents (a menu,
+   a load: the camera does not run): stale, and the UI stays centred. */
+static volatile float wonder_view_rect[4] = {0.0f, 0.0f, 1.0f, 1.0f};
+static volatile int64_t wonder_view_rect_at = -1000;
+static void wonder_view_rect_set(float x, float y, float w, float h) {
+    extern volatile LONG64 hos_present_count;
+    wonder_view_rect[0] = x, wonder_view_rect[1] = y, wonder_view_rect[2] = w, wonder_view_rect[3] = h;
+    __atomic_store_n(&wonder_view_rect_at, (int64_t)hos_present_count, __ATOMIC_RELEASE);
+}
+int hos_wonder_view_value(const char *what, int normal) {   /* (millionths; AGE: presents since it was set) */
+    extern volatile LONG64 hos_present_count;
+    if (!strcmp(what, "AGE")) return (int)(hos_present_count - __atomic_load_n(&wonder_view_rect_at, __ATOMIC_ACQUIRE));
+    const int i = !strcmp(what, "X") ? 0 : !strcmp(what, "Y") ? 1 : !strcmp(what, "W") ? 2 : !strcmp(what, "H") ? 3 : -1;
+    return i < 0 ? normal : (int)(wonder_view_rect[i] * 1e6f);
+}
+/* One axis: the display centre for a view of half size `half` around the game's centre `logic` with its 16:9 half size
+   `half_169`, first at `want`, then inside [lo, hi] (when the bounds are narrower than the view: centred, or with `floor` its
+   lower edge on the lower bound, so a tall window never shows below the floor; build 1's portrait run centred it and showed
+   9.5 units below), then never so far that the 16:9 view leaves it. */
+static float wonder_display_axis(float logic, float want, float half, float half_169, float lo, float hi, int floor) {
+    float at = want;
+    if (lo > -1e30f && hi < 1e30f && hi - lo <= 2.0f * half) at = floor ? lo + half : 0.5f * (lo + hi);
+    else {
+        if (lo > -1e30f && at < lo + half) at = lo + half;
+        if (hi < 1e30f && at > hi - half) at = hi - half;
+    }
+    const float room = half - half_169;
+    return wonder_clampf(at, logic - room, logic + room);
+}
+void hos_wonder_cam_view(Ctx *c) {   /* after 0x8043cd50: s0 top, s1 bottom, s2 left, s3 right, relative to the eye; x21 the camera */
+    float top, bottom, left, right;
+    memcpy(&top, c->vreg[0], 4), memcpy(&bottom, c->vreg[1], 4), memcpy(&left, c->vreg[2], 4), memcpy(&right, c->vreg[3], 4);
+    const float hh_169 = 0.5f * wonder_span_169, hw_169 = hh_169 * (16.0f / 9.0f);
+    const float hh = 0.5f * (top - bottom), hw = 0.5f * (right - left);
+    if (!(hh_169 > 0.0f) || (hh <= hh_169 * 1.0001f && hw <= hw_169 * 1.0001f)) {   /* (16:9: identity) */
+        wonder_view_rect_set(0.0f, 0.0f, 1.0f, 1.0f);
+        return;
+    }
+    const uint64_t camera = c->x[21];
+    const float cx = wonder_load_f(c, camera + 0x28), cy = wonder_load_f(c, camera + 0x2c);
+    float lo[2] = {-3e38f, -3e38f}, hi[2] = {3e38f, 3e38f};
+    for (int i = 0; i < 4; i++)
+        if (wonder_cam[i].camera == camera) { memcpy(lo, wonder_cam[i].lo, sizeof lo), memcpy(hi, wonder_cam[i].hi, sizeof hi); break; }
+    const float hwx = hw > hw_169 ? hw : hw_169, hhy = hh > hh_169 ? hh : hh_169;
+    const float dx = wonder_display_axis(cx, cx, hwx, hw_169, lo[0], hi[0], 0) - cx;
+    const float dy = wonder_display_axis(cy, cy + (hhy - hh_169), hhy, hh_169, lo[1], hi[1], 1) - cy;
+    wonder_view_rect_set((hwx - hw_169 - dx) / (2.0f * hwx), (hhy - hh_169 + dy) / (2.0f * hhy), hw_169 / hwx, hh_169 / hhy);
+    top += dy, bottom += dy, left += dx, right += dx;
+    memcpy(c->vreg[0], &top, 4), memcpy(c->vreg[1], &bottom, 4), memcpy(c->vreg[2], &left, 4), memcpy(c->vreg[3], &right, 4);
+    static float logged_dx = 1e30f, logged_dy = 1e30f;
+    static int n;
+    if ((fabsf(dx - logged_dx) > 0.5f || fabsf(dy - logged_dy) > 0.5f) && n++ < 400) {
+        extern volatile LONG64 hos_present_count;
+        logged_dx = dx, logged_dy = dy;
+        hos_log("live: camera %#llx view %.2fx%.2f (16:9 %.2fx%.2f) at %.2f,%.2f moved %+.2f,%+.2f (present %lld)",
+                (unsigned long long)camera, (double)(2 * hw), (double)(2 * hh), (double)(2 * hw_169), (double)(2 * hh_169),
+                (double)cx, (double)cy, (double)dx, (double)dy, (long long)hos_present_count);
+    }
+}
+
+/* ---- The scene arena sized from need (private live-size spike) ----
+   0x8098a580 makes the scene arena: x1 is the graphics config, its +8 the arena's bytes (0x1a000000 as shipped). 0x8098a670
+   passes them to 0x804f4310, which takes that much from a game heap for the physical pool (0x802a87c0), then (x20) gives the
+   same size to the arena's manager (+0x28, 0x804f43b0) and to 0x804f4110: the virtual pool (0x804f41e0, nvnMemoryPoolInitialize
+   at 0x804f42a0) mapped whole onto the physical pool (MapVirtual at 0x804f42f4). The game's render sizes are its preset table at
+   0x82d6e3f8 (seven entries, 0x80988a60; its own clamp 0x80988be0 picks one): the arena is the game's bytes for its largest
+   preset's pixels. Sized here for the most pixels this session's window can have: the screen's (the window does not outgrow
+   it) or the window's now, whichever has more; never below the game's own.
+   The game heap refused 1664 MB for the physical pool (build 1: MapVirtual got no pool, no title). So the game's physical pool
+   keeps its size; only the virtual pool and the manager get the larger one (after 0x804f43a4), and the pages past the game's
+   pool map onto a host pool of the rest (nvn_native.c, hos_wonder_arena_split): guest memory that nothing touches until a
+   target is drawn there. */
+static uint64_t wonder_arena_game, wonder_arena_bytes;
+static volatile int wonder_arena_pending;
+static uint64_t wonder_preset_pixels(Ctx *c) {
+    uint64_t most = 0;
+    for (int i = 0; i < 7; i++) {
+        const uint64_t w = recomp_load32(c, 0x82d6e3f8ULL + 8 * i), h = recomp_load32(c, 0x82d6e3fcULL + 8 * i);
+        if (w * h > most) most = w * h;
+    }
+    return most;
+}
+static uint64_t wonder_arena_pixels(Ctx *c) {   /* the most render pixels the arena holds; 0: unknown, no cap */
+    if (!wonder_arena_game || !wonder_arena_bytes) return 0;
+    return wonder_preset_pixels(c) * wonder_arena_bytes / wonder_arena_game;
+}
+void hos_wonder_arena_size(Ctx *c) {   /* after 0x8098a5a4 */
+    const uint64_t cfg = c->x[20];
+    const uint64_t game = recomp_load64(c, cfg + 8);
+    const uint64_t preset = wonder_preset_pixels(c);
+    const uint64_t screen = (uint64_t)(uint32_t)GetSystemMetrics(SM_CXSCREEN) * (uint32_t)GetSystemMetrics(SM_CYSCREEN);
+    const uint64_t window = hos_wonder_live_pixels();
+    const uint64_t window_px = (window & 0xffffffffULL) * (window >> 32);
+    const uint64_t need = screen > window_px ? screen : window_px;
+    wonder_arena_game = game;
+    wonder_arena_bytes = game;
+    if (!window || (getenv("HOS_WONDER_ARENA_NEED") && !atoi(getenv("HOS_WONDER_ARENA_NEED"))) ||
+        !game || !preset || need <= preset) {
+        hos_log("live: scene arena %llu MB, the game's (need %llu pixels, the game's largest preset %llu)",
+                (unsigned long long)(game >> 20), (unsigned long long)need, (unsigned long long)preset);
+        return;
+    }
+    const uint64_t grain = game & (~game + 1);   /* (the game's size's own granularity: its lowest set bit) */
+    uint64_t bytes = (uint64_t)((double)game * need / preset);
+    bytes = (bytes + grain - 1) / grain * grain;
+    wonder_arena_bytes = bytes;
+    __atomic_store_n(&wonder_arena_pending, 1, __ATOMIC_RELEASE);
+    hos_log("live: scene arena %llu MB for %llu pixels (the screen %ux%u, the window %ux%u; the game's %llu MB for %llu)",
+            (unsigned long long)(bytes >> 20), (unsigned long long)need, (unsigned)GetSystemMetrics(SM_CXSCREEN),
+            (unsigned)GetSystemMetrics(SM_CYSCREEN), (unsigned)window, (unsigned)(window >> 32), (unsigned long long)(game >> 20),
+            (unsigned long long)preset);
+}
+void hos_wonder_arena_virtual(Ctx *c) {   /* after 0x804f43a4: x20, the size for the manager and the virtual pool */
+    if (!__atomic_load_n(&wonder_arena_pending, __ATOMIC_ACQUIRE) || c->x[20] != wonder_arena_game) return;
+    c->x[20] = wonder_arena_bytes;
+}
+void hos_wonder_arena_made(Ctx *c) {   /* after 0x8098a690: the arena made */
+    (void)c;
+    if (__atomic_exchange_n(&wonder_arena_pending, 0, __ATOMIC_ACQ_REL))
+        hos_log("live: scene arena: the virtual pool was never split (the game's %llu MB kept)", (unsigned long long)(wonder_arena_game >> 20));
+}
+/* (nvn_native.c, at MapVirtual from 0x804f42f4) the arena's size and the game's physical pool's, if this is the one to split;
+   0 otherwise. Called once: the split is done or refused after it. */
+uint64_t hos_wonder_arena_split(uint64_t *game) {
+    if (!__atomic_exchange_n(&wonder_arena_pending, 0, __ATOMIC_ACQ_REL)) return 0;
+    *game = wonder_arena_game;
+    return wonder_arena_bytes;
+}
+void hos_wonder_arena_refused(void) { wonder_arena_bytes = wonder_arena_game; }
+
+void hos_wonder_live_force(Ctx *c) {   /* after 0x801ac368: w13 is the routine's "re-evaluate" bit */
+    const uint64_t want = hos_wonder_live_pixels();
+    if (!want) return;
+    if (want == __atomic_load_n(&wonder_live_applied, __ATOMIC_ACQUIRE) &&
+        hos_wonder_window_ready() == __atomic_load_n(&wonder_live_applied_window, __ATOMIC_ACQUIRE)) return;
+    c->x[13] |= 0x80000;
+}
+void hos_wonder_live_size(Ctx *c) {   /* after 0x801ac67c: the requested size is at sp+0x10, the game's limit at x29-8 */
+    const uint64_t want = hos_wonder_live_pixels();
+    if (!want) return;
+    uint32_t w = (uint32_t)want, h = (uint32_t)(want >> 32);
+    const uint32_t gw_ = recomp_load32(c, c->x[29] - 8), gh_ = recomp_load32(c, c->x[29] - 4);   /* (the game's preset, logged) */
+    /* The limit: the window textures the game has now (they follow the drawable: nvn_native.c), else the game's preset before
+       the first present; within them the device's largest 2D image. Same shape when it has to fit. */
+    const uint64_t ready = hos_wonder_window_ready();
+    const uint32_t most = (uint32_t)rx_option(950, 0);   /* (0 before the renderer answers: no device cap yet) */
+    uint32_t lw = ready ? (uint32_t)ready : gw_, lh = ready ? (uint32_t)(ready >> 32) : gh_;
+    if (most && lw > most) lw = most;
+    if (most && lh > most) lh = most;
+    if (lw && lh && (w > lw || h > lh)) {
+        const double k = fmin((double)lw / w, (double)lh / h);
+        w = (uint32_t)(w * k), h = (uint32_t)(h * k);
+    }
+    /* The scene arena holds the game's largest preset's pixels per its own bytes (hos_wonder_arena_size): a render with more
+       pixels than the arena was sized for keeps its shape at the most pixels it holds, and says so. */
+    const uint64_t arena_px = wonder_arena_pixels(c);
+    int arena_capped = 0;
+    if (arena_px && (uint64_t)w * h > arena_px) {
+        const double k = sqrt((double)arena_px / ((double)w * h));
+        w = (uint32_t)(w * k), h = (uint32_t)(h * k);
+        arena_capped = 1;
+    }
+    if (!w || !h) return;
+    recomp_store32(c, c->x[31] + 0x10, w);
+    recomp_store32(c, c->x[31] + 0x14, h);
+    const float ratio = (float)w / h;
+    memcpy(A64_MEM + IMAGE_BASE + 0x2c71b14, &ratio, sizeof ratio);
+    wonder_tall_scale = hos_wonder_vertical_span(w, h);
+    wonder_view_factors(w, h);
+    const uint64_t render = (uint64_t)h << 32 | w;
+    const uint64_t was_render = hos_wonder_wide_size;
+    const int changed = render != hos_wonder_wide_size;
+    hos_wonder_wide_size = render;
+    __atomic_store_n(&wonder_live_applied, want, __ATOMIC_RELEASE);
+    __atomic_store_n(&wonder_live_applied_window, ready, __ATOMIC_RELEASE);
+    if (!changed) return;
+    if (arena_capped)
+        hos_log("live: render %ux%u: the most pixels the scene arena holds (%llu MB for %llu pixels)", w, h,
+                (unsigned long long)(wonder_arena_bytes >> 20), (unsigned long long)arena_px);
+    const uint64_t arena = hos_wonder_arena_take_high();
+    uint64_t live_n = 0;
+    const uint64_t live = hos_wonder_arena_take_peak(&live_n);
+    extern volatile LONG64 hos_present_count;
+    hos_log("live: drawable %ux%u -> render %ux%u (window %ux%u, device limit %u, game preset %ux%u) ratio %.4f span %.4f "
+            "view %.4fx%.4f arena-high-before %.1f MiB arena-live-peak-before %.1f MiB (%llu textures; render was %ux%u) "
+            "present %lld",
+            (unsigned)want, (unsigned)(want >> 32), w, h, (unsigned)ready, (unsigned)(ready >> 32), most, gw_, gh_,
+            (double)ratio, (double)wonder_tall_scale, (double)wonder_view_w, (double)wonder_view_h, arena / 1048576.0,
+            live / 1048576.0, (unsigned long long)live_n, (unsigned)was_render, (unsigned)(was_render >> 32),
+            (long long)hos_present_count);
+}

@@ -33,6 +33,9 @@ namespace mkwvk {
 extern std::vector<std::string> gpu_device_names;
 extern std::vector<gpu_choice::Card> gpu_device_cards;   // (the same GPUs' models, for the row's saved card: gpu_choice.h)
 extern const MkwVkHost* host;
+inline bool wonder_window_live() {
+    return host && host->version >= 36 && host->ab_value && host->ab_value("WONDER_WINDOW_LIVE", 0);
+}
 void logf(const char* fmt, ...);
 // (longshot) A line at another level than info, as host/hos.h's hos_log_at: "[trace] " leads its text, after the host's thread tag
 enum LogLevel : int { log_error, log_warn, log_info, log_debug, log_trace };

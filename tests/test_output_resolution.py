@@ -67,7 +67,7 @@ using namespace mkwvk;
 namespace ur = upscaler_rows;
 // (the screen's display modes: none, so the sizes offered before them)
 std::vector<display_modes::Size> screen_modes() { return {}; }
-''' + host[host.index("int hos_ini_option(const char *key, int otherwise);"):host.index("HLE(_ZN2nn2oe16GetOperationModeEv)")] + \
+''' + host[host.index("int hos_ini_option(const char *key, int otherwise);"):host.index("/* Private tier spike:")] + \
         output_engine(ROOT, "/// The Output resolution: the game's own reduced size") + \
         upscaler[upscaler.index("const char* tx_resolution(int v) {"):upscaler.index("\n}\n", upscaler.index("const char* tx_resolution(int v) {")) + 3] + r'''
 int main(int argc, char **argv) {
@@ -124,7 +124,7 @@ int main(int argc, char **argv) {
         const std::vector<display_modes::Shape> shapes = output_shapes();
         assert(shapes.size() == 2 && shapes[0].name == "16:9" && shapes[1].name == "32:9");
         assert(output_shape_of(0) == 0 && output_shape_of(1) == 0 && output_shape_of(4) == 1 && output_shape_of(5) == 0);
-        assert(aspect_last() == 1 && aspect_shape(0) == "16:9" && aspect_shape(1) == "32:9");
+        assert((aspect_window_value() < 0 ? aspect_last() == 1 : aspect_last() == 2 && aspect_shape(2) == "Window") && aspect_shape(0) == "16:9" && aspect_shape(1) == "32:9");
         assert(aspect_of_choice(1, 1) == 0 && aspect_for_choice(4) == 1);
         const int was = opts.output_res, was_aspect = opts.ultrawide;
         opts.output_res = 4;
@@ -139,7 +139,7 @@ int main(int argc, char **argv) {
         const int new_modes = custom_index() + 1;
         output_extras.insert(output_extras.end(), {{3440, 1440}, {1600, 1200}});
         assert(last_choice() == new_modes + 1 && output_choice_of(3440, 1440) == new_modes);
-        assert(aspect_last() == 3 && aspect_shape(0) == "4:3" && aspect_shape(2) == "21:9" && aspect_shape(3) == "32:9");
+        assert((aspect_window_value() < 0 ? aspect_last() == 3 : aspect_last() == 4 && aspect_shape(4) == "Window") && aspect_shape(0) == "4:3" && aspect_shape(2) == "21:9" && aspect_shape(3) == "32:9");
         assert(output_for_aspect(0) == new_modes + 1 && output_for_aspect(2) == new_modes);
         // A stale ultrawide resolution or startup ID cannot leak into the 16:9 list.
         const int flat = aspect_index("16:9");

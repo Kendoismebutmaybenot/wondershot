@@ -9,6 +9,7 @@
    start so). Mouse: a click in the window captures it (relative motion, for nn_hid.c), Esc or leaving releases it.
    While the Insert menu is open the mouse is free (the cursor shown, for the menu's clicks: hos_mouse_pointer) and
    the game gets none of it; the capture it had comes back when the menu closes. */
+#include "../hos_wide_size.h"
 #include "../hos.h"
 void hos_input_clear_toggles(void);
 #include "../hos_sdl.h"
@@ -202,6 +203,7 @@ static void set_fullscreen(int on) {
     hos_log("display: %s", fullscreen ? "fullscreen (F11 for a window)" : "windowed");
 }
 
+static void wonder_live_publish(int w, int h);
 static DWORD WINAPI renderer_main(void *p) {
     (void)p;
     const int ok = rx_start(&vk_window);
@@ -211,6 +213,7 @@ static DWORD WINAPI renderer_main(void *p) {
         int w = 0, h = 0;
         hos_pointer_size(&pointer, &w, &h);
         if (w > 0 && h > 0) rx_resize(w, h);
+        wonder_live_publish(w, h);
     }
     SetEvent(renderer_up);
     return 0;
@@ -268,6 +271,17 @@ static const char *window_title(const char *fallback) {
     return (e && e[0]) ? e : fallback;
 }
 
+static void create_window(void);
+static uint64_t wonder_window_pixels;
+/* The current drawable in Window mode. */
+static volatile uint64_t wonder_live_pixels;
+uint64_t hos_wonder_live_pixels(void) { return __atomic_load_n(&wonder_live_pixels, __ATOMIC_ACQUIRE); }
+static void wonder_live_publish(int w, int h) {
+    if (w > 0 && h > 0 && wonder_window_pixels)
+        __atomic_store_n(&wonder_live_pixels, (uint64_t)(unsigned)h << 32 | (unsigned)w, __ATOMIC_RELEASE);
+}
+uint64_t hos_wonder_window_pixels(void) { return wonder_window_pixels; }
+
 int hos_display_init(void) {
     if (env_on("HOS_HEADLESS")) return 0;
     if (!hos_sdl_load()) {
@@ -304,6 +318,19 @@ int hos_display_init(void) {
     refresh_monitors();
     if (hos_monitor_screen_size(&w,&h)) hos_posix_window[1]=w,hos_posix_window[2]=h;
     sdl_ready = 1;
+    int hos_ini_option(const char *, int);
+    const int follow_window = getenv("HOS_WINDOW_ASPECT") ? env_on("HOS_WINDOW_ASPECT") :
+                              hos_ini_option("ultrawide", 0) == HOS_WONDER_WINDOW_ASPECT;
+    if (follow_window) {
+        /* Guest targets are allocated at startup. Get the actual drawable before starting the guest. */
+        create_window();
+        int pw = 0, ph = 0;
+        hos_sdl_pixel_size(window, &pw, &ph);
+        if (pw > 0 && ph > 0) {
+            wonder_window_pixels = (uint64_t)(unsigned)ph << 32 | (unsigned)pw;
+            wonder_live_publish(pw, ph);
+        }
+    }
     return 1;
 }
 
@@ -317,13 +344,7 @@ void hos_display_start(void) {
     __atomic_store_n(&start_asked, 1, __ATOMIC_RELEASE);
 }
 
-/* the main thread's loop, until the process ends: the window once asked for, then its events */
-void hos_display_loop(void) {
-    if (!sdl_ready) {
-        for (;;) Sleep(1000);
-    }
-    HosSdlEvent e;
-    while (!__atomic_load_n(&start_asked, __ATOMIC_ACQUIRE)) hos_sdl_wait_event(&e, 10);   /* (nothing to show yet) */
+static void create_window(void) {
     extern float hos_aspect_ratio;
     /* (the picture's shape when Monitor's shape set one, wider or narrower than 16:9: 960 x 720 for 4:3, 1720 x 720 for 21:9) */
     int win_w = hos_aspect_ratio > 0.0f ? (int)(720 * hos_aspect_ratio + 0.5f) : 1280, win_h = 720;
@@ -360,6 +381,16 @@ void hos_display_loop(void) {
             __atomic_store_n(&desktop_w, dw, __ATOMIC_RELAXED), __atomic_store_n(&desktop_h, dh, __ATOMIC_RELAXED);
     }
     pointer_update(0, 0);
+}
+
+/* the main thread's loop, until the process ends: the window once asked for, then its events */
+void hos_display_loop(void) {
+    if (!sdl_ready) {
+        for (;;) Sleep(1000);
+    }
+    HosSdlEvent e;
+    while (!__atomic_load_n(&start_asked, __ATOMIC_ACQUIRE)) hos_sdl_wait_event(&e, 10);   /* (nothing to show yet) */
+    if (!window) create_window();
     CloseHandle(CreateThread(NULL, 0, renderer_main, NULL, 0, NULL));
     DWORD refresh_asked = GetTickCount();
     int text_on = 0;
@@ -400,6 +431,7 @@ void hos_display_loop(void) {
                         int w = 0, h = 0;
                         hos_pointer_size(&pointer, &w, &h);
                         rx_resize(w, h);
+                        wonder_live_publish(w, h);
                     }
                     break;
                 case HOS_SDL_EV_FOCUS_GAINED:
