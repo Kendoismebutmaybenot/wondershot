@@ -37,6 +37,7 @@
 int hos_binding(int set, int button, int slot);   /* nn_hid.c */
 int hos_sdl_pads(uint64_t *buttons, int32_t stick[4], int *deck_builtin_input);   /* pad_sdl.c */
 void hos_sdl_pad_first(char *out, size_t cap, int *type, int *sdl);
+int hos_sdl_pad_last(int *type);
 int hos_mods_file(const char *rel, char *out, size_t cap);   /* mods.c */
 extern const char *hos_romfs_dir;   /* nn_fs.c: the game's RomFS folder */
 int hos_xinput_pads(void);   /* nn_hid.c */
@@ -1200,6 +1201,14 @@ volatile int hos_prompts_row = -1;   /* nn_hid.c's live input ("!prompts <row>")
 static int live_face(void) {
     const int choice = hos_prompts_row >= 0 ? hos_prompts_row : rx_option(HOS_OPT_PROMPTS, -1);
     if (choice >= 1 && choice <= HOS_PROMPT_N) return choice - 1;
+    if (choice == HOS_PROMPT_ROW_LAST) {
+        int type;
+        const int sdl = hos_sdl_pad_last(&type);
+        if (sdl) {
+            const int face = face_of_type(sdl, type);
+            return face >= 0 ? face : HOS_PROMPT_XBOX;
+        }
+    }
     if (choice < 0) return live_face_now;   /* (no menu: the start's) */
     char name[128] = "";
     int type = 0, sdl = 0;

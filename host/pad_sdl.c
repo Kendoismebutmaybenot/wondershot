@@ -56,7 +56,7 @@ static struct {
     uint8_t hd_sent[HD_RUMBLE_PACKET_SIZE];
     int64_t hd_ns;
     int motion, motion_on;
-    int64_t motion_retry_ns, used_ns;
+    int64_t motion_retry_ns, used_ns, prompts_used_ns;
     uint64_t input_sig;
     unsigned rested;   /* (longshot) the sticks' axes seen at rest since it was opened, a bit each: only those steer */
     signed char held[4];   /* (the way each axis was last held, -1, 0 or 1: one held the other way has passed its rest) */
@@ -79,6 +79,7 @@ static int32_t state_pl_stick[4][4];
 static int state_pl_on[4];
 static int state_deck_builtin;   /* (longshot) the Deck's built-in controls gave gameplay input in that poll */
 static char state_name[128];   /* the first controller's name (host/prompts.c: the button prompts' Auto) */
+static int state_last_type, state_last_sdl;
 static int state_type, state_sdl;   /* and its SDL type (the loaded SDL's numbers, 0 unknown), and that SDL (3, 2; 0 none) */
 /* (the Insert menu's Rumble strength row, changed: a short rumble at the new strength, so the player feels what the row
    does, and that the controller rumbles at all) until when, hos_now_ns */
@@ -752,7 +753,11 @@ static void pads_poll(void) {
             }
             {   /* (motion: the pad last used; a stick counts by which way it is pushed, not by how far) */
                 for (int k = 0; k < 4; k++) sig |= (uint64_t)(v[k] > 0 ? 1 : v[k] < 0 ? 2 : 0) << (32 + 2 * k);
-                if (sig != pads[i].input_sig) pads[i].input_sig = sig, pads[i].used_ns = now;
+                if (sig != pads[i].input_sig) {
+                    pads[i].input_sig = sig;
+                    pads[i].used_ns = now;
+                    if (sig) pads[i].prompts_used_ns = now;
+                }
             }
             /* (longshot) what plays its vibration: chosen again each poll (host/vibration.h), then played */
             vib_choose(i, mode, now);
@@ -841,6 +846,12 @@ static void pads_poll(void) {
                 state_sdl = sdl;
                 break;
             }
+        int last = -1;
+        for (int i = 0; i < MAX_PADS; i++)
+            if (pads[i].gc && !pads[i].motion_only && pads[i].prompts_used_ns &&
+                (last < 0 || pads[i].prompts_used_ns > pads[last].prompts_used_ns)) last = i;
+        state_last_sdl = last >= 0 ? state_sdl : 0;
+        state_last_type = last >= 0 ? hos_sdl_pad_type(pads[last].gc) : 0;
         ReleaseSRWLockExclusive(&state_lock);
 }
 
@@ -940,6 +951,15 @@ void hos_sdl_pad_first(char *out, size_t cap, int *type, int *sdl) {
     if (type) *type = state_type;
     if (sdl) *sdl = state_sdl;
     ReleaseSRWLockShared(&state_lock);
+}
+
+/* The last open controller that sent input. Zero until one does. */
+int hos_sdl_pad_last(int *type) {
+    AcquireSRWLockShared(&state_lock);
+    const int sdl = state_last_sdl;
+    *type = state_last_type;
+    ReleaseSRWLockShared(&state_lock);
+    return sdl;
 }
 
 /* Both forms of one actuator's sample, published together by the game's vibration thread. */
