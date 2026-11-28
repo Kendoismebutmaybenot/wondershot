@@ -67,7 +67,7 @@ using namespace mkwvk;
 namespace ur = upscaler_rows;
 // (the screen's display modes: none, so the sizes offered before them)
 std::vector<display_modes::Size> screen_modes() { return {}; }
-''' + host[host.index("int hos_ini_option(const char *key, int otherwise);"):host.index("HLE(_ZN2nn2oe16GetOperationModeEv)")] + \
+''' + host[host.index("int hos_ini_option(const char *key, int otherwise);"):host.index("/* Private tier spike:")] + \
         output_engine(ROOT, "/// The Output resolution: the game's own reduced size") + \
         upscaler[upscaler.index("const char* tx_resolution(int v) {"):upscaler.index("\n}\n", upscaler.index("const char* tx_resolution(int v) {")) + 3] + r'''
 int main(int argc, char **argv) {
