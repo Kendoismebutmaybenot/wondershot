@@ -216,8 +216,39 @@ uint64_t hos_rt_pool_size(uint64_t game) {
     if (!logged++) hos_log("applet: render target pool %llu MB (the game's %llu MB)", (unsigned long long)(v >> 20), (unsigned long long)(game >> 20));
     return v;
 }
-HLE(_ZN2nn2oe16GetOperationModeEv) { RET(handheld() ? 0 : 1); }     /* OperationMode_Handheld / _Console (docked) */
-HLE(_ZN2nn2oe18GetPerformanceModeEv) { RET(handheld() ? 0 : 1); }   /* PerformanceMode_Normal / _Boost (docked) */
+/* Private tier spike: four monotonic phases, read only at the known Wonder poll. */
+static int tier_probe_phase = -1;
+int hos_tier_probe_phase(void) { return __atomic_load_n(&tier_probe_phase, __ATOMIC_RELAXED); }
+void hos_tier_probe_site(Ctx *c, unsigned pc) {
+    static unsigned seen[32];
+    static int phase = -2;
+    int now = hos_tier_probe_phase();
+    if (now < 0) return;
+    if (phase != now) { memset(seen, 0, sizeof seen); phase = now; }
+    for (size_t i = 0; i < sizeof seen / sizeof *seen; ++i) {
+        if (seen[i] == pc) return;
+        if (seen[i]) continue;
+        seen[i] = pc;
+        hos_log("tier: phase=%d guest=%08x lr=%llx x0=%llx", now, pc,
+                (unsigned long long)c->x[30], (unsigned long long)c->x[0]);
+        return;
+    }
+}
+static void tier_probe_report(Ctx *c, const char *name) {
+    int phase = hos_tier_probe_phase();
+    if (phase < 0) return;
+    static unsigned seen[4];
+    unsigned bit = *name == 'o' ? 1 : *name == 'p' ? 2 : 4;
+    if (__atomic_fetch_or(&seen[phase], bit, __ATOMIC_RELAXED) & bit) return;
+    hos_log("tier: phase=%d query=%s value=%llu lr=%llx", phase, name,
+            (unsigned long long)c->x[0], (unsigned long long)c->x[30]);
+}
+HLE(_ZN2nn2oe16GetOperationModeEv) {
+    RET(hos_tier_probe_phase() >= 1 ? 0 : !handheld()); tier_probe_report(c, "operation");
+}
+HLE(_ZN2nn2oe18GetPerformanceModeEv) {
+    RET(hos_tier_probe_phase() >= 2 ? 0 : !handheld()); tier_probe_report(c, "performance");
+}
 HLE(_ZN2nn2oe20GetCurrentFocusStateEv) { RET(1); }    /* FocusState_InFocus */
 HLE(_ZN2nn2oe25GetProgramTotalActiveTimeEv) { RET(hos_now_ns() - boot_ns); }
 HLE(_ZN2nn2oe24GetExpectedVolumeBalanceEPfS1_) {
@@ -236,6 +267,23 @@ HLE(_ZN2nn2oe38SetUserInactivityDetectionTimeExtendedEb) {}
 /* No system notifications ever arrive: TryPop says none, Pop waits forever (as it would on a quiet console). */
 extern void nvn_output_preview_poll(Ctx *c);
 HLE(_ZN2nn2oe25TryPopNotificationMessageEPj) {
+    static const char *path;
+    static int checked;
+    if (c->x[30] == 0x801DB7BC) {
+        if (!checked) { path = getenv("HOS_WONDER_TIER_PROBE"); checked = 1; }
+        FILE *f = path ? fopen(path, "r") : NULL;
+        if (f) {
+            int next = fgetc(f) - '0';
+            fclose(f);
+            int old = hos_tier_probe_phase();
+            if (next == old + 1 && next <= 3) {
+                static const unsigned messages[] = {0, 30, 31, 300};
+                __atomic_store_n(&tier_probe_phase, next, __ATOMIC_RELAXED);
+                hos_log("tier: phase=%d message=%u poll-lr=%llx", next, messages[next], (unsigned long long)c->x[30]);
+                if (next) { G32(ARG(0)) = messages[next]; RET(1); return; }
+            }
+        }
+    }
     nvn_output_preview_poll(c);
     RET(0);
 }
@@ -570,6 +618,8 @@ HLE(_ZN2nn2oe23GetCurrentGraphicsScaleEv) {
     memcpy(&bits, &one, 4);
     c->vreg[0][0] = bits, c->vreg[0][1] = 0;
     c->x[0] = output_mode() ? 0 : 1;   /* (the tier, w0: 0 for a size chosen or the default, 1 for 2048x1152 and the handheld profile) */
+    if (hos_tier_probe_phase() >= 3) c->x[0] = 2;
+    tier_probe_report(c, "scale");
 }
 HLE(_ZN2nn2oe42SetGraphicsScaleChangedNotificationEnabledEb) {}
 HLE(_ZN2nn2oe31EnterExitRequestHandlingSectionEv) {}

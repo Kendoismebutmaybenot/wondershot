@@ -21,6 +21,10 @@ namespace mkwvk {
 inline bool wonder_pause_clip_program(uint64_t key) {
     switch (key) {
     case 0x17eae0d5631a64d9ULL:
+    case 0x76644328dc442686ULL: // live world-map course card pieces
+    case 0x358733aca6fce19eULL:
+    case 0xd78b6f219d230773ULL:
+    case 0xb7c0f9ec41788e04ULL:
     case 0x4ec3eb6f3380885fULL:
     case 0x59d456a771f4bd6dULL:
     case 0xa023a0f885f649f0ULL:

@@ -302,6 +302,9 @@ NV(nvnMemoryPoolBuilderSetStorage) { ((nvn_pool_builder *)P(0))->mem = U64(1); (
 NV(nvnMemoryPoolBuilderSetFlags) { ((nvn_pool_builder *)P(0))->flags = U32(1); }
 /* Prepare output descriptors before their pool or textures are registered with replay. */
 static char detached_descriptor_only;
+#define TIER_NV(fmt, ...) do { int phase = hos_tier_probe_phase(); if (phase >= 0) \
+    hos_log("tier: phase=%d lr=%llx " fmt, phase, (unsigned long long)c->x[30], __VA_ARGS__); } while (0)
+static void guest_chain(Ctx *c, char *b, size_t cap);
 NV(nvnMemoryPoolInitialize) {
     const nvn_pool_builder *b = (const nvn_pool_builder *)P(1);
     nvn_pool *o = (nvn_pool *)P(0);
@@ -309,6 +312,7 @@ NV(nvnMemoryPoolInitialize) {
     o->magic = NVN_MAGIC('P', 'O', 'O', 'L');
     o->flags = b->flags;
     o->size = b->size;
+    TIER_NV("pool-init handle=%llx backing=%llx bytes=%llu flags=%x", (unsigned long long)U64(0), (unsigned long long)b->mem, (unsigned long long)b->size, o->flags);
     if (o->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) {
         if (b->mem || !o->size || o->size % VPAGE) die("virtual pool storage %#llx size %#llx", (unsigned long long)b->mem,
                                                        (unsigned long long)o->size);
@@ -326,9 +330,13 @@ NV(nvnMemoryPoolInitialize) {
         ReleaseSRWLockExclusive(&vmap_lock);
         o->gpu = m->gpu;
         OLOG("virtual pool %#llx bytes at GPU %#llx", (unsigned long long)o->size, (unsigned long long)o->gpu);
-        if (getenv("HOS_NVN_LOG_VMAP"))
+        if (getenv("HOS_NVN_LOG_VMAP")) {
             hos_log("nvn: virtual pool %#llx bytes at GPU %#llx (flags %#x, lr %#llx)", (unsigned long long)o->size,
                     (unsigned long long)o->gpu, o->flags, (unsigned long long)c->x[30]);
+            char chain[400];
+            guest_chain(c, chain, sizeof chain);
+            hos_log("nvn: virtual pool %#llx bytes: guest chain %s", (unsigned long long)o->size, chain);
+        }
         RET(1);
         return;
     }
@@ -357,6 +365,7 @@ static int no_pool(Ctx *c, const char *what) {
 NV(nvnMemoryPoolFinalize) {
     if (no_pool(c, "finalize")) return;
     nvn_pool *o = (nvn_pool *)P(0);
+    TIER_NV("pool-free handle=%llx gpu=%llx bytes=%llu", (unsigned long long)U64(0), (unsigned long long)o->gpu, (unsigned long long)o->size);
     struct nvn_vmap *vm = pool_vmap(o);
     if (vm) {   /* (its GPU range is not reused) */
         int mapped = 0;   /* (pages still mapped: what the GPU drew there goes into their memory first) */
@@ -413,6 +422,55 @@ NV(nvnMemoryPoolInvalidateMappedRange) {   /* the CPU is about to read what the 
     if ((int64_t)U64(1) >= 0) rx_nvn_invalidate(o->gpu + U64(1), U64(2));
 }
 NV(nvnMemoryPoolSetDebugLabel) {}
+/* (private live-size spike) Wonder's scene arena, larger than the game's physical pool (hos_main.c hos_wonder_arena_size): all its
+   pages map onto one host pool of the arena's size, made here in guest memory above the heap. The game's physical pool stays
+   made and unmapped (its pages are never touched). Builds 2 and 3 of the arena spike mapped the first pages onto the game's
+   pool and the rest onto a host pool: a target across that seam (one 3840x2160 at 0x10019e68c00, the pause blur's) sampled
+   solid blue. HOS_WONDER_ARENA_SPLIT=1 (a test): that split again. */
+static uint64_t wonder_arena_seam;   /* (the game's pool's size: the arena offset where builds 2 and 3 had their seam) */
+
+uint64_t hos_wonder_arena_split(uint64_t *game);
+void hos_wonder_arena_refused(void);
+static int wonder_arena_map(Ctx *c, struct nvn_vmap *vm, uint64_t pool, uint64_t size) {
+    uint64_t game = 0;
+    const uint64_t want = hos_wonder_arena_split(&game);
+    if (!want) return 0;
+    const nvn_pool *p = (const nvn_pool *)gw(pool, sizeof(nvn_pool));
+    if (want != size || !p->mem || p->size != game || game % VPAGE || size <= game) {
+        hos_log("live: scene arena: not split (%#llx bytes asked, the game's pool %#llx)", (unsigned long long)size,
+                (unsigned long long)p->size);
+        hos_wonder_arena_refused();
+        return 0;
+    }
+    const int split = getenv("HOS_WONDER_ARENA_SPLIT") && atoi(getenv("HOS_WONDER_ARENA_SPLIT"));
+    const uint64_t first = split ? game : 0;   /* (the arena's pages on the game's pool) */
+    const uint64_t rest = size - first, region = 0x10000 + rest;
+    const uint64_t addr = hos_region_alloc(region, 0x10000);
+    if (!addr) die("scene arena: no guest memory for %#llx bytes", (unsigned long long)rest);
+    memset(GP(addr), 0, 0x10000);   /* (the pool object and its builder; the storage after is fresh, zero, untouched) */
+    struct { nvn_pool pool; nvn_pool_builder builder; } *hp = (void *)GP(addr);
+    hp->builder.mem = addr + 0x10000;
+    hp->builder.size = rest;
+    hp->builder.flags = p->flags;
+    const Ctx saved = *c;
+    c->x[0] = h2g(&hp->pool);
+    c->x[1] = h2g(&hp->builder);
+    n_nvnMemoryPoolInitialize(c, NULL);
+    const int ok = (int)c->x[0];
+    *c = saved;
+    if (!ok) die("scene arena: host pool of %#llx bytes", (unsigned long long)rest);
+    AcquireSRWLockExclusive(&vmap_lock);
+    for (uint64_t k = 0; k < size / VPAGE; k++)
+        vm->page[k] = k < first / VPAGE ? p->gpu + k * VPAGE : hp->pool.gpu + (k - first / VPAGE) * VPAGE;
+    vmap_runs(vm);
+    InterlockedIncrement(&vpage_gen);
+    ReleaseSRWLockExclusive(&vmap_lock);
+    wonder_arena_seam = game;
+    hos_log("live: scene arena %llu MB: %llu MB on the game's pool %#llx (%llu MB made), then %llu MB on one host pool at %#llx",
+            (unsigned long long)(size >> 20), (unsigned long long)(first >> 20), (unsigned long long)p->gpu,
+            (unsigned long long)(game >> 20), (unsigned long long)(rest >> 20), (unsigned long long)hp->pool.gpu);
+    return 1;
+}
 /* NVNmappingRequest (0x28 bytes): physical pool (guest pointer), physical offset, virtual offset, size, storage class */
 NV(nvnMemoryPoolMapVirtual) {
     if (no_pool(c, "map virtual")) return;
@@ -428,6 +486,8 @@ NV(nvnMemoryPoolMapVirtual) {
         memcpy(&poff, r + 0x28 * i + 8, 8);
         memcpy(&voff, r + 0x28 * i + 16, 8);
         memcpy(&size, r + 0x28 * i + 24, 8);
+        TIER_NV("pool-map virtual=%llx pool=%llx bytes=%llu", (unsigned long long)U64(0), (unsigned long long)pool, (unsigned long long)size);
+        if (c->x[30] == 0x804f42f4 && pool && !poff && !voff && size == vm->size && wonder_arena_map(c, vm, pool, size)) continue;
         if (voff < 0 || poff < 0 || !size || size > vm->size || (uint64_t)voff > vm->size - size ||
             ((uint64_t)voff | (uint64_t)poff | size) % VPAGE)
             die("MapVirtual request %d: virtual %#llx physical %#llx size %#llx", i, (unsigned long long)voff,
@@ -762,10 +822,83 @@ int nvn_tex_live_at(uint64_t gpu, nvn_tex *out) {
 }
 
 void hos_watch_guest_writes(const uint8_t *data, uint64_t size);   /* (below) */
+static void guest_chain(Ctx *c, char *b, size_t cap);
+/* (private live-size spike) What Wonder's scene arena really holds: the textures made in its virtual pool and not finalized
+   (made again over the same object replaces it), as the union of their byte ranges. Its peak since the last take is the
+   arena's need at the render sizes of that time (hos_wonder_live_size logs it at each size change). Also: a texture across
+   the arena offset where the game's own pool ended (wonder_arena_seam), said once per size. */
+#define WONDER_ARENA_LIVE 4096
+static struct wonder_arena_live { const nvn_tex *t; uint64_t lo, hi; } wonder_arena_live[WONDER_ARENA_LIVE];
+static int wonder_arena_live_n, wonder_arena_live_over;
+static uint64_t wonder_arena_live_sum, wonder_arena_peak, wonder_arena_peak_n;
+static SRWLOCK wonder_arena_lock = SRWLOCK_INIT;
+static int wonder_range_cmp(const void *a, const void *b) {
+    const struct wonder_arena_live *x = a, *y = b;
+    return x->lo < y->lo ? -1 : x->lo > y->lo;
+}
+static void wonder_arena_use_del_locked(const nvn_tex *o) {
+    for (int i = 0; i < wonder_arena_live_n; i++)
+        if (wonder_arena_live[i].t == o) {
+            wonder_arena_live_sum -= wonder_arena_live[i].hi - wonder_arena_live[i].lo;
+            wonder_arena_live[i] = wonder_arena_live[--wonder_arena_live_n];
+            return;
+        }
+}
+static void wonder_arena_use_del(const nvn_tex *o) {
+    if (!o->pool || !(o->pool->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) || o->pool->size < (256ULL << 20)) return;
+    AcquireSRWLockExclusive(&wonder_arena_lock);
+    wonder_arena_use_del_locked(o);
+    ReleaseSRWLockExclusive(&wonder_arena_lock);
+}
+static void wonder_arena_use_add(const nvn_tex *o) {
+    const uint64_t lo = (uint64_t)o->off, hi = lo + o->L.size;
+    AcquireSRWLockExclusive(&wonder_arena_lock);
+    wonder_arena_use_del_locked(o);
+    if (wonder_arena_live_n < WONDER_ARENA_LIVE) {
+        wonder_arena_live[wonder_arena_live_n++] = (struct wonder_arena_live){o, lo, hi};
+        wonder_arena_live_sum += hi - lo;
+    } else if (!wonder_arena_live_over++) hos_log("live: scene arena: more than %d live textures, the rest not counted", WONDER_ARENA_LIVE);
+    if (wonder_arena_live_sum > wonder_arena_peak) {   /* (the union is at most the sum: worked out only when it could be a new peak) */
+        static struct wonder_arena_live sorted[WONDER_ARENA_LIVE];
+        const int n = wonder_arena_live_n;
+        memcpy(sorted, wonder_arena_live, n * sizeof *sorted);
+        qsort(sorted, n, sizeof *sorted, wonder_range_cmp);
+        uint64_t total = 0, at = 0;
+        for (int i = 0; i < n; i++) {
+            const uint64_t a = sorted[i].lo > at ? sorted[i].lo : at;
+            if (sorted[i].hi > a) total += sorted[i].hi - a, at = sorted[i].hi;
+        }
+        if (total > wonder_arena_peak) wonder_arena_peak = total, wonder_arena_peak_n = n;
+    }
+    ReleaseSRWLockExclusive(&wonder_arena_lock);
+    if (wonder_arena_seam && lo < wonder_arena_seam && hi > wonder_arena_seam) {
+        static uint64_t said[64];
+        static int nsaid;
+        const uint64_t key = (uint64_t)o->d.width << 40 | (uint64_t)o->d.height << 16 | (o->d.format & 0xffff);
+        int seen = 0;
+        for (int i = 0; i < nsaid; i++) seen |= said[i] == key;
+        if (!seen && nsaid < 64) {
+            said[nsaid++] = key;
+            hos_log("live: scene arena texture %ux%u format %#x at GPU %#llx (arena %#llx..%#llx) crosses offset %#llx, the game "
+                    "pool's end", o->d.width, o->d.height, o->d.format, (unsigned long long)o->gpu, (unsigned long long)lo,
+                    (unsigned long long)hi, (unsigned long long)wonder_arena_seam);
+        }
+    }
+}
+/* the peak union since the last call, its texture count in *n; and starts a new peak from what is live now */
+uint64_t hos_wonder_arena_take_peak(uint64_t *n) {
+    AcquireSRWLockExclusive(&wonder_arena_lock);
+    const uint64_t peak = wonder_arena_peak;
+    *n = wonder_arena_peak_n;
+    wonder_arena_peak = 0, wonder_arena_peak_n = 0;
+    ReleaseSRWLockExclusive(&wonder_arena_lock);
+    return peak;
+}
 NV(nvnTextureInitialize) {
     const nvn_tex_builder *b = CTB(P(1));
     nvn_tex *o = TX(P(0));
     if (o->magic == NVN_MAGIC('T', 'E', 'X', 0) && o->serial) {   /* initialised again without Finalize */
+        wonder_arena_use_del(o);
         live_del(o);
         rx_nvn_texture_released(o);
     }
@@ -782,6 +915,24 @@ NV(nvnTextureInitialize) {
         if (!o->gpu || !nvn_gpu_write(o->gpu, gw(b->pkg_data, o->L.size), o->L.size)) die("packaged texture data without storage");
     }
     o->serial = new_serial();
+    if (o->pool && (o->pool->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) && o->pool->size >= (256ULL << 20)) {
+        wonder_arena_use_add(o);
+        /* (live-size spike: how much of Wonder's boot scene arena the frame's targets reach) */
+        extern volatile uint64_t hos_wonder_arena_high;
+        const uint64_t end = (uint64_t)o->off + o->L.size;
+        uint64_t was = __atomic_load_n(&hos_wonder_arena_high, __ATOMIC_RELAXED);
+        while (end > was && !__atomic_compare_exchange_n(&hos_wonder_arena_high, &was, end, 1, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {}
+    }
+    TIER_NV("tex-init handle=%llx serial=%llu format=%x %ux%u pool=%llx off=%llx bytes=%llu gpu=%llx", (unsigned long long)U64(0), (unsigned long long)o->serial, o->d.format, o->d.width, o->d.height, (unsigned long long)(o->pool ? h2g(o->pool) : 0), (unsigned long long)o->off, (unsigned long long)o->L.size, (unsigned long long)o->gpu);
+    {
+        const int phase = hos_tier_probe_phase();
+        static int last = -1;
+        if (phase >= 0 && phase != last && o->gpu == 0x10000008400ULL) {
+            last = phase;
+            char chain[400]; guest_chain(c, chain, sizeof chain);
+            TIER_NV("scene-chain %ux%u %s", o->d.width, o->d.height, chain);
+        }
+    }
     if (u_ == &detached_descriptor_only) { RET(1); return; }
     live_put(o);
     rx_nvn_texture_created(o);
@@ -800,6 +951,8 @@ NV(nvnTextureInitialize) {
 }
 NV(nvnTextureFinalize) {
     nvn_tex *o = TX(P(0));
+    TIER_NV("tex-free handle=%llx serial=%llu %ux%u bytes=%llu gpu=%llx", (unsigned long long)U64(0), (unsigned long long)o->serial, o->d.width, o->d.height, (unsigned long long)o->L.size, (unsigned long long)o->gpu);
+    wonder_arena_use_del(o);
     live_del(o);
     rx_nvn_texture_released(o);
     o->magic = 0;
@@ -1279,6 +1432,7 @@ NV(nvnQueueFinalize) { ((nvn_queue *)P(0))->magic = 0; }
 NV(nvnQueueGetError) { if (P(1)) memset(P(1), 0, sizeof(NVNqueueErrorInfo)); RET(NVN_QUEUE_GET_ERROR_RESULT_GPU_NO_ERROR); }
 NV(nvnQueueFlush) { held_flush(); }
 NV(nvnQueueFinish) {
+    if (c->x[30] == 0x8033AEE4) TIER_NV("window-rebuild queue-finish handle=%llx", (unsigned long long)U64(0));
 #ifdef TRACY_ENABLE
     HT_WAIT(tz, "nvnQueueFinish");
     HT_ZONE_TEXTF(tz, "lr %#llx", (unsigned long long)c->x[30]);
@@ -1973,9 +2127,23 @@ static void watch_rt(Ctx *c, const uint64_t *ct, const uint64_t *cv, int n) {
     if (want == ~0ull) want = getenv("HOS_NVN_WATCH_RT") ? strtoull(getenv("HOS_NVN_WATCH_RT"), NULL, 16) : 0;
     if (!want || !ct) return;
     for (int i = 0; i < n; i++) {
-        if (!ct[i] || nvn_gpu_guest(((const nvn_tex *)GP(ct[i]))->gpu) != want) continue;
+        if (!ct[i]) continue;
+        const nvn_tex *tex = (const nvn_tex *)GP(ct[i]);
+        if (tex->gpu != want && nvn_gpu_guest(tex->gpu) != want) continue;
         char b[400];
         guest_chain(c, b, sizeof b);
+        static const char *arm_path;
+        if (!arm_path) { const char *p = getenv("HOS_WONDER_DRAWLOG"); if (p) arm_path = p; }
+        if (arm_path) {
+            FILE *f = fopen(arm_path, "r");
+            if (f) {
+                int armed = fgetc(f);
+                fclose(f);
+                if (armed == '1') hos_log("wonder-rt: %.6f gpu=%llx n=%d size=%ux%u cb=%llx %s",
+                    hos_now_ns() * 1e-9, (unsigned long long)tex->gpu, n, tex->d.width, tex->d.height,
+                    (unsigned long long)c->x[0], b);
+            }
+        }
         static uint64_t seen[64];
         static int nseen;
         uint64_t key = 0;
@@ -2630,6 +2798,7 @@ static void wonder_hdr_view(uint64_t tex, nvn_view *v) {
         }
 }
 NV(nvnWindowInitialize) {
+    TIER_NV("window-init handle=%llx", (unsigned long long)U64(0));
     const nvn_win_builder *b = WB(P(1));
     nvn_win *o = (nvn_win *)P(0);
     memset(o, 0, sizeof *o);
@@ -2643,10 +2812,16 @@ NV(nvnWindowInitialize) {
     const nvn_tex *t0 = win_tex(o, 0);
     hos_log("nvn: window of %d textures (%d active), %dx%d format %#x", o->ntex, o->active, (int)t0->d.width,
             (int)t0->d.height, t0->d.format);
+    if (getenv("HOS_WONDER_TRACE_WINDOW")) {
+        for (int i = 0; i < o->ntex; ++i)
+            hos_log("wonder-window: init lr=%#llx idx=%d guest=%#llx gpu=%#llx size=%ux%u", (unsigned long long)c->x[30], i,
+                    (unsigned long long)o->tex[i], (unsigned long long)win_tex(o, i)->gpu,
+                    win_tex(o, i)->d.width, win_tex(o, i)->d.height);
+    }
     detached_probe_capture(c, o);
     RET(1);
 }
-NV(nvnWindowFinalize) {}
+NV(nvnWindowFinalize) { TIER_NV("window-free handle=%llx", (unsigned long long)U64(0)); }
 NV(nvnWindowSetDebugLabel) {}
 NV(nvnWindowSetNumActiveTextures) { nvn_win *o = (nvn_win *)P(0); if (I(1) < 2 || I(1) > o->ntex) die("%d active window textures", I(1)); o->active = I(1); }
 NV(nvnWindowGetNumActiveTextures) { const nvn_win *o = (const nvn_win *)P(0); RET((uint32_t)(o->active ? o->active : o->ntex)); }
@@ -2664,6 +2839,8 @@ NV(nvnWindowSetPresentInterval) {
     o->interval = hos_vi_native_interval(c, I(1));
 }
 NV(nvnWindowSetCrop) {
+    TIER_NV("window-crop %d,%d %dx%d", I(1), I(2), I(3), I(4));
+    if (hos_tier_probe_phase() >= 0) { char chain[400]; guest_chain(c, chain, sizeof chain); TIER_NV("crop-chain %s", chain); }
     nvn_win *o = (nvn_win *)P(0);
     const int v[4] = {I(1), I(2), I(3), I(4)};
     if (memcmp(o->crop, v, sizeof v)) hos_log("nvn: window crop %d,%d %dx%d", v[0], v[1], v[2], v[3]);
@@ -3102,6 +3279,14 @@ NV(nvnQueuePresentTexture) {
             detached_last_present_generation = preview;
             detached_last_present_queue = detached_received_queue;
             detached_last_present_instance = detached_received_instance;
+        }
+        static int trace_wonder = -1;
+        if (trace_wonder < 0) trace_wonder = getenv("HOS_WONDER_TRACE_WINDOW") != NULL;
+        if (trace_wonder) {
+            extern volatile LONG64 hos_present_count;
+            const nvn_tex *t = win_tex(o, i);
+            hos_log("wonder-window: present n=%lld idx=%d active=%d count=%d gpu=%#llx %ux%u crop=%dx%d", (long long)hos_present_count,
+                    i, o->active, o->ntex, (unsigned long long)t->gpu, t->d.width, t->d.height, o->crop[2], o->crop[3]);
         }
         if (preview)
             rx_nvn_present_trial(win_tex(o, i), o->crop, preview);
@@ -3826,4 +4011,155 @@ void nvn2_dispatch(Ctx *c, const char *name, void **cache) {
 HLE(nvnBootstrapLoader) {
     char name[256];
     RET(nvn_native_proc(guest_name(ARG(0), name, sizeof name)));
+}
+
+/* ---- Window mode: Wonder's window textures follow the drawable ----
+   The game's present routine 0x8033AE20 rebuilds its window when the owner's byte +0xC8 is 1 (its format change): queue
+   finish, window and texture finalize, the textures made again at the owner's size (+0x8, +0xC: floats) in the owner's pool
+   (+0xC0), the window made again, its crop (+0xAC..+0xB8) applied. Hooked after 0x8033AE78 (w8: that byte), it is asked to
+   rebuild at the drawable's size whenever they differ. A size the pool cannot hold, or a host pool more than twice what the
+   size needs, gets a new pool of the size's own; the previous host pool is finalized and its guest memory freed 30 presents
+   later (the game's boot pool belongs to its heap and stays). Hooked after 0x8033B1B8 (the rebuild done), the new size is
+   published: hos_wonder_live_size asks no larger render than the window holds. */
+volatile uint64_t hos_wonder_arena_high;
+uint64_t hos_wonder_arena_take_high(void) { return __atomic_exchange_n(&hos_wonder_arena_high, 0, __ATOMIC_RELAXED); }
+static volatile uint64_t wonder_window_ready;
+uint64_t hos_wonder_window_ready(void) { return __atomic_load_n(&wonder_window_ready, __ATOMIC_ACQUIRE); }
+uint64_t hos_wonder_live_pixels(void);
+int rx_option(int id, int otherwise);
+typedef struct { nvn_pool pool; nvn_pool_builder builder; } wonder_window_pool;
+static uint64_t wonder_pool_current, wonder_pool_retired;
+static LONG64 wonder_pool_retire_at;
+
+static uint64_t wonder_owner_size(Ctx *c, uint64_t owner) {
+    float fw, fh;
+    const uint32_t bw = recomp_load32(c, owner + 8), bh = recomp_load32(c, owner + 12);
+    memcpy(&fw, &bw, 4), memcpy(&fh, &bh, 4);
+    return (uint64_t)(uint32_t)fh << 32 | (uint32_t)fw;
+}
+
+static void wonder_pool_retire_step(Ctx *c) {
+    extern volatile LONG64 hos_present_count;
+    if (!wonder_pool_retired || hos_present_count < wonder_pool_retire_at) return;
+    const Ctx saved = *c;
+    c->x[0] = wonder_pool_retired;
+    n_nvnMemoryPoolFinalize(c, NULL);
+    *c = saved;
+    hos_region_free(wonder_pool_retired);   /* (the pool object is at the start of its region) */
+    hos_log("live: window pool %#llx finalized and freed", (unsigned long long)wonder_pool_retired);
+    wonder_pool_retired = 0;
+}
+
+void hos_wonder_window_present(Ctx *c) {   /* after 0x8033AE78 */
+    const uint64_t owner = c->x[19];
+    if (!hos_mem_mapped(owner, 0xc9)) return;
+    if (!hos_wonder_window_ready()) {
+        __atomic_store_n(&wonder_window_ready, wonder_owner_size(c, owner), __ATOMIC_RELEASE);
+        const uint64_t r = hos_wonder_window_ready();
+        hos_log("live: window textures %ux%u at the first present", (unsigned)r, (unsigned)(r >> 32));
+    }
+    wonder_pool_retire_step(c);
+    const uint64_t want = hos_wonder_live_pixels();
+    if (!want || (c->x[8] & 0xff) == 1) return;
+    uint32_t w = (uint32_t)want, h = (uint32_t)(want >> 32);
+    const uint32_t most = (uint32_t)rx_option(950, 0);
+    if (most && (w > most || h > most)) {   /* (the device's largest 2D image: same shape) */
+        const double k = fmin((double)most / w, (double)most / h);
+        w = (uint32_t)(w * k), h = (uint32_t)(h * k);
+    }
+    const uint64_t now = wonder_owner_size(c, owner);
+    if (now == ((uint64_t)h << 32 | w)) return;
+    int n = recomp_load8(c, owner + 0xa9);
+    /* The window keeps every texture it has. The game's count at +0xa9 (the rebuild's, 0x8033b138) can be below the window's
+       own (2 of 3 after the title) while the game later asks for all of them active (nvnWindowSetNumActiveTextures from
+       0x801dbbdc): a rebuild with +0xa9's count made a 2-texture window and that call died ("3 active window textures", the
+       edges round's build 4 explore run). +0x70 is the window (nvnQueuePresentTexture's, 0x8033ae6c). */
+    const uint64_t win = recomp_load64(c, owner + 0x70);
+    static int count_policy = -1;
+    if (count_policy < 0) {
+        const char *policy = getenv("HOS_WONDER_KEEP_WINDOW_COUNT");
+        count_policy = !policy || atoi(policy);
+        hos_log("live: rebuild count policy: %s", count_policy ? "window" : "guest owner");
+    }
+    if (count_policy && win && hos_mem_mapped(win, sizeof(nvn_win))) {
+        const nvn_win *wo = (const nvn_win *)gw(win, sizeof(nvn_win));
+        if (wo->magic == NVN_MAGIC('W', 'I', 'N', 'D') && wo->ntex > n && wo->ntex <= 4) {
+            hos_log("live: window rebuild keeps the window's %d textures (the game's count %d)", wo->ntex, n);
+            n = wo->ntex;
+            recomp_store8(c, owner + 0xa9, (uint8_t)n);
+        }
+    }
+    const uint64_t tex0 = recomp_load64(c, owner + 0x88), pool_addr = recomp_load64(c, owner + 0xc0);
+    if (n < 1 || n > 4 || !tex0 || !pool_addr || !hos_mem_mapped(tex0, sizeof(nvn_tex)) ||
+        !hos_mem_mapped(pool_addr, sizeof(nvn_pool))) return;
+    nvn_texdesc d = ((const nvn_tex *)gw(tex0, sizeof(nvn_tex)))->d;
+    d.width = w, d.height = h;
+    nvn_texlayout L;
+    nvn_tex_layout(&d, &L);
+    uint64_t bytes = 0;
+    for (int i = 0; i < n; i++) bytes = ((bytes + L.align - 1) / L.align) * L.align + L.size;   /* (as the rebuild lays them) */
+    const nvn_pool *pool = (const nvn_pool *)gw(pool_addr, sizeof(nvn_pool));
+    const int ours = pool_addr == wonder_pool_current;
+    if (pool->size < bytes || (ours && bytes * 2 < pool->size)) {
+        if (wonder_pool_retired) return;   /* (one retirement at a time: the next present asks again) */
+        const uint64_t storage = (bytes + 0xffff) & ~0xffffULL, region = 0x10000 + storage;
+        const int64_t begin = hos_now_ns();
+        const uint64_t addr = hos_region_alloc(region, 0x10000);
+        const int64_t allocated = hos_now_ns();
+        if (!addr) return;
+        // The guest rebuild clears render targets before drawing; only its NVN
+        // metadata needs initialisation here. Avoid faulting in the image pool
+        // on the presentation thread before the resize can take effect.
+        const int eager = env_on("HOS_WONDER_EAGER_WINDOW_ZERO");
+        memset(GP(addr), 0, eager ? region : 0x10000);
+        const int64_t cleared = hos_now_ns();
+        wonder_window_pool *wp = (wonder_window_pool *)GP(addr);
+        wp->builder.mem = addr + 0x10000;
+        wp->builder.size = storage;
+        wp->builder.flags = pool->flags;
+        const Ctx saved = *c;
+        c->x[0] = h2g(&wp->pool);
+        c->x[1] = h2g(&wp->builder);
+        n_nvnMemoryPoolInitialize(c, NULL);
+        const int ok = (int)c->x[0];
+        *c = saved;
+        if (!ok) { hos_region_free(addr); return; }
+        recomp_store64(c, owner + 0xc0, h2g(&wp->pool));
+        if (ours) {
+            extern volatile LONG64 hos_present_count;
+            wonder_pool_retired = pool_addr;
+            wonder_pool_retire_at = hos_present_count + 30;
+        }
+        wonder_pool_current = h2g(&wp->pool);
+        hos_log("live: window alloc timing eager=%d alloc=%.2fms zero=%.2fms init=%.2fms", eager,
+                (allocated - begin) * 1e-6, (cleared - allocated) * 1e-6, (hos_now_ns() - cleared) * 1e-6);
+        hos_log("live: window pool %#llx: %llu bytes for %d textures %ux%u (was %#llx, %llu bytes%s)",
+                (unsigned long long)wonder_pool_current, (unsigned long long)storage, n, w, h, (unsigned long long)pool_addr,
+                (unsigned long long)pool->size, ours ? ", retiring" : ", the game's: kept");
+    }
+    /* (the crop the rebuild applies again stays inside the new textures; the game sets its own after its next size) */
+    const uint32_t cx = recomp_load32(c, owner + 0xac), cy = recomp_load32(c, owner + 0xb0);
+    const uint32_t cw = recomp_load32(c, owner + 0xb4), ch = recomp_load32(c, owner + 0xb8);
+    if (cx + cw > w || cy + ch > h) {
+        recomp_store32(c, owner + 0xac, 0), recomp_store32(c, owner + 0xb0, 0);
+        recomp_store32(c, owner + 0xb4, cw < w ? cw : w), recomp_store32(c, owner + 0xb8, ch < h ? ch : h);
+    }
+    const float fw = (float)w, fh = (float)h;
+    uint32_t bw, bh;
+    memcpy(&bw, &fw, 4), memcpy(&bh, &fh, 4);
+    recomp_store32(c, owner + 8, bw);
+    recomp_store32(c, owner + 12, bh);
+    recomp_store8(c, owner + 0xc8, 1);
+    c->x[8] = 1;
+    hos_log("live: window rebuild %ux%u -> %ux%u (%d textures, %llu bytes)", (unsigned)now, (unsigned)(now >> 32), w, h, n,
+            (unsigned long long)bytes);
+}
+
+void hos_wonder_window_rebuilt(Ctx *c) {   /* after 0x8033B1B8: the rebuild done */
+    const uint64_t size = wonder_owner_size(c, c->x[19]);
+    __atomic_store_n(&wonder_window_ready, size, __ATOMIC_RELEASE);
+    const uint64_t tex0 = recomp_load64(c, c->x[19] + 0x88);
+    const nvn_tex *t = tex0 && hos_mem_mapped(tex0, sizeof(nvn_tex)) ? (const nvn_tex *)gw(tex0, sizeof(nvn_tex)) : NULL;
+    hos_log("live: window rebuilt %ux%u (texture 0: %ux%u serial %llu)", (unsigned)size, (unsigned)(size >> 32),
+            t ? t->d.width : 0, t ? t->d.height : 0, t ? (unsigned long long)t->serial : 0ULL);
 }

@@ -102,6 +102,7 @@ int64_t draw_slotgen_saves();
 /// RX_VK_FLASH_RECORD=<key>,...: the last frames' draws of those programs, written to the log for frames around a flash
 void draw_records_log(uint64_t frame_lo, uint64_t frame_hi);
 void pass_traces_log(uint64_t frame_lo, uint64_t frame_hi);   // (RX_VK_PASS_TRACE=1)
+bool wonder_draw_log_on();   // (private live-size spike: HOS_WONDER_DRAWLOG, vk_draw.cpp)
 /// (longshot) The latest Linux memory-pressure shortfall (bytes) and sample number from texture_frame() without holding pools_mu
 uint64_t linux_pressure_shortfall(uint64_t* seq = nullptr);
 /// Changes with every uniform update the stream makes (vk_replay.cpp): descriptors bound before may be stale

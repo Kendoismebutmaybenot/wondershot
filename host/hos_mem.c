@@ -324,6 +324,8 @@ void hos_region_free(uint64_t addr) {
         return;
     }
     const int away = hos_vcore_away();
+    if (hos_tier_probe_phase() >= 0) hos_log("tier: phase=%d region-free addr=%llx bytes=%llu",
+        hos_tier_probe_phase(), (unsigned long long)addr, (unsigned long long)size);
     discard_pages(addr, size);   /* (nothing for a region of no size) */
     LOCK();
     for (int i = 0; i < nregions; i++) {
@@ -505,6 +507,8 @@ uint64_t hos_used_memory(uint64_t base) {
 /* nn::os::AllocateMemoryPages(unsigned long, unsigned long) -> Result: new pages read as zero */
 HLE(_ZN2nn2os19AllocateMemoryPagesEmm) {
     HOS_TRACE_CALL("AllocateMemoryPages");
+    if (hos_tier_probe_phase() >= 0) hos_log("tier: phase=%d mem=AllocateMemoryPages addr=%llx bytes=%llu lr=%llx",
+        hos_tier_probe_phase(), (unsigned long long)ARG(0), (unsigned long long)ARG(1), (unsigned long long)c->x[30]);
     const uint64_t a = ARG(0), n = ARG(1), end = a + n;
     if (!hos_guest_range(a, n)) {   /* (longshot: a range that wrapped around was zeroed whole, past the guest window) */
         hos_log("AllocateMemoryPages(%#llx, %#llx): outside the guest window", (unsigned long long)a, (unsigned long long)n);
@@ -579,6 +583,8 @@ HLE(_ZN2nn2os19AllocateMemoryPagesEmm) {
 /* nn::os::FreeMemoryPages(unsigned long, unsigned long) -> Result */
 HLE(_ZN2nn2os15FreeMemoryPagesEmm) {
     HOS_TRACE_CALL("FreeMemoryPages");
+    if (hos_tier_probe_phase() >= 0) hos_log("tier: phase=%d mem=FreeMemoryPages addr=%llx bytes=%llu lr=%llx",
+        hos_tier_probe_phase(), (unsigned long long)ARG(0), (unsigned long long)ARG(1), (unsigned long long)c->x[30]);
     if (!hos_guest_range(ARG(0), ARG(1))) {   /* (longshot: decommitted or discarded: guest pages only) */
         hos_log("FreeMemoryPages(%#llx, %#llx): outside the guest window", (unsigned long long)ARG(0), (unsigned long long)ARG(1));
         RET(0xCA01);

@@ -344,7 +344,7 @@ const char* hn_ultrawide(int v, int variant) {
         "The game's own shape.",
         "Wider than 16:9: the camera sees more at the sides. The HUD and menus keep the middle 16:9.",
         "The 4:3 camera shows less at the sides. The HUD fits the available width.",
-        "Fills the startup window. Tall windows show more above and below. Restart after resizing."};
+        "Fits the picture when you resize the window. Restart after choosing this option."};
     if (variant >= 0) return variant < (int)std::size(t) ? t[variant] : nullptr;
     if (v >= 0 && v == aspect_window_value()) return t[4];
     if (aspect_is_monitors(v)) return t[0];

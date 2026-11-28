@@ -340,7 +340,16 @@ static uint64_t host_guest_alloc(uint64_t size) {
 
 void hos_watch_guest_writes(const uint8_t *data, uint64_t size);   /* nvn_native.c */
 static void host_watch_guest_writes(uint64_t guest, uint64_t size) { hos_watch_guest_writes(hos_guest_base() + guest, size); }
-static float host_aspect_ratio(void) { return hos_aspect_ratio; }
+static float host_aspect_ratio(void) {
+#if defined(__linux__) && !defined(A64_MEM_ZERO)
+    extern int hos_wonder_window_aspect;
+    uint64_t hos_wonder_live_pixels(void);
+    /* Fit the frame's live crop, not the startup camera aspect. During a resize
+       the last frame can still have the old crop; do not stretch that frame. */
+    if (hos_wonder_window_aspect && hos_wonder_live_pixels()) return 0.0f;
+#endif
+    return hos_aspect_ratio;
+}
 static uint64_t host_wonder_wide_size(void) {
     extern uint64_t hos_wonder_wide_size;
     return hos_wonder_wide_size;
@@ -411,7 +420,12 @@ static void host_slept_ns(int64_t out[2]) {
 
 /* (longshot) MkwVkHost.ab_value (version 36): host/hos.h's hos_ab_value, an inline function, as one the renderer can call. Its
    cost outside an A/B is one load, as for the host's own readers */
-static int host_ab_value(const char *name, int normal) { return hos_ab_value(name, normal); }
+int hos_wonder_view_value(const char *what, int normal);   /* (hos_main.c: private live-size spike) */
+static int host_ab_value(const char *name, int normal) {
+    if (name[0] == 'W' && !strcmp(name, "WONDER_WINDOW_LIVE")) return hos_wonder_live_pixels() != 0;
+    if (name[0] == 'W' && !strncmp(name, "WONDER_VIEW_", 12)) return hos_wonder_view_value(name + 12, normal);
+    return hos_ab_value(name, normal);
+}
 
 /* (longshot) typed text for the Insert menu's text fields (MkwVkHost.take_text): the window's thread puts each character and
    editing key in (host/display.c WM_CHAR and WM_KEYDOWN, host/posix/display_sdl.c SDL's text input and key events), the menu

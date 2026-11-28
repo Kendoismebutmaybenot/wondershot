@@ -295,6 +295,13 @@ bool create_image(const VkImageCreateInfo& ci, VkImage& image, VmaAllocation& al
     ai.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
     ai.priority = memory_priority::image(memory_tiers(), target, textures);   // (a memory object of its own; a pool's block has its pool's)
     if (dev.memory_budget) ai.flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
+    if (target && !dedicated && !textures && wonder_window_live()) {
+        // (private live-size spike: a render target of half a block or more gets a memory object of its own, so a window that
+        // shrinks gives back what its large targets took instead of leaving the targets' blocks fragmented)
+        VkMemoryRequirements asked{};
+        const VkMemoryRequirements* mr = need ? need->get() : image_requirements(ci, &asked) ? &asked : nullptr;
+        if (mr && mr->size >= kImageBlock / 2) dedicated = true;
+    }
     if (dedicated) {   // (a memory object of its own, which freeing gives back whole: a pool's block is kept by VMA when it empties)
         VmaAllocationCreateInfo dai = ai;
         dai.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;

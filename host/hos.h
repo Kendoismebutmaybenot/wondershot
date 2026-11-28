@@ -67,11 +67,13 @@ void hos_hle_counted(HleCount *h, void (*fn)(Ctx *c), Ctx *c);
 extern const uint64_t hos_image_base, hos_image_end;   /* (gen/hos_image.c) */
 extern const uint64_t hos_program_id;                  /* (gen/hos_image.c: main.npdm's) */
 extern const char hos_main_build_id[];                 /* (gen/hos_image.c: main's NSO build id, hex) */
+uint64_t hos_wonder_live_pixels(void);              /* 0 outside Window mode */
 /* (oot-recomp) MKW's own hooks at fixed guest addresses (its frame pacer in nvn_native.c / nn_vi.c, its idle loop in
    hos_thread.c) run only when the lifted main is Mario Kart World's: any other game has other code there */
 int hos_game_is_mkw(void);
 #define HOS_GAME_TITLE "Wondershot"
 uint64_t hos_used_memory(uint64_t base);   /* (hos_mem.c) base + heap + the game's mapped pages: the used memory it is told */
+int hos_tier_probe_phase(void);
 int hos_commit(uint64_t addr, uint64_t size);          /* (mkw_glue.c) guest pages made usable by host APIs: 1, or 0 if refused */
 /* (mkw_glue.c) host memory the game cannot go on without: never NULL (but for 0 bytes). At the commit limit a failed
    allocation is tried again for up to 5 s, as a guest commit is; then the out-of-memory line and notice, and the game stops.

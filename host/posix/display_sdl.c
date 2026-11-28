@@ -203,6 +203,7 @@ static void set_fullscreen(int on) {
     hos_log("display: %s", fullscreen ? "fullscreen (F11 for a window)" : "windowed");
 }
 
+static void wonder_live_publish(int w, int h);
 static DWORD WINAPI renderer_main(void *p) {
     (void)p;
     const int ok = rx_start(&vk_window);
@@ -212,6 +213,7 @@ static DWORD WINAPI renderer_main(void *p) {
         int w = 0, h = 0;
         hos_pointer_size(&pointer, &w, &h);
         if (w > 0 && h > 0) rx_resize(w, h);
+        wonder_live_publish(w, h);
     }
     SetEvent(renderer_up);
     return 0;
@@ -271,6 +273,13 @@ static const char *window_title(const char *fallback) {
 
 static void create_window(void);
 static uint64_t wonder_window_pixels;
+/* The current drawable in Window mode. */
+static volatile uint64_t wonder_live_pixels;
+uint64_t hos_wonder_live_pixels(void) { return __atomic_load_n(&wonder_live_pixels, __ATOMIC_ACQUIRE); }
+static void wonder_live_publish(int w, int h) {
+    if (w > 0 && h > 0 && wonder_window_pixels)
+        __atomic_store_n(&wonder_live_pixels, (uint64_t)(unsigned)h << 32 | (unsigned)w, __ATOMIC_RELEASE);
+}
 uint64_t hos_wonder_window_pixels(void) { return wonder_window_pixels; }
 
 int hos_display_init(void) {
@@ -317,7 +326,10 @@ int hos_display_init(void) {
         create_window();
         int pw = 0, ph = 0;
         hos_sdl_pixel_size(window, &pw, &ph);
-        if (pw > 0 && ph > 0) wonder_window_pixels = (uint64_t)(unsigned)ph << 32 | (unsigned)pw;
+        if (pw > 0 && ph > 0) {
+            wonder_window_pixels = (uint64_t)(unsigned)ph << 32 | (unsigned)pw;
+            wonder_live_publish(pw, ph);
+        }
     }
     return 1;
 }
@@ -419,6 +431,7 @@ void hos_display_loop(void) {
                         int w = 0, h = 0;
                         hos_pointer_size(&pointer, &w, &h);
                         rx_resize(w, h);
+                        wonder_live_publish(w, h);
                     }
                     break;
                 case HOS_SDL_EV_FOCUS_GAINED:

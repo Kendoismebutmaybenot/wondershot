@@ -68,6 +68,7 @@
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
+bool wonder_live_drawn_crop(uint64_t gpu, uint32_t tw, uint32_t th, const int crop[4], int out[4]);   // (vk_draw.cpp: private live-size spike)
 extern std::recursive_mutex menu_mu;
 extern std::atomic<bool> movie_networks_slow;   // (vk_draw.cpp: the movie networks left out)
 int64_t presents_now;   // (the presents so far, for SlowWatch)
@@ -5329,7 +5330,9 @@ static bool acknowledge_output_trial_frame(OutputTrialFrame frame) {
 
 void present_image_with_trial(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkImageView view, bool source_srgb, bool allow_scale, OutputTrialSource trial);
 
-void do_present(const nvn_tex* t, const int crop[4], uint64_t native_generation = 0) {
+void do_present(const nvn_tex* t, const int crop_in[4], uint64_t native_generation = 0) {
+    int live_crop[4];   // (private live-size spike: the part drawn while the size changes)
+    const int* crop = t && wonder_live_drawn_crop(t->gpu, t->d.width, t->d.height, crop_in, live_crop) ? live_crop : crop_in;
     OutputTrialSource trial;
     trial.native_generation = native_generation;
     trial.generation = output_trial_generation.load(std::memory_order_acquire);
@@ -5348,6 +5351,7 @@ void do_present(const nvn_tex* t, const int crop[4], uint64_t native_generation 
         static std::atomic<int64_t> seen{0};
         static const int64_t at = getenv("RX_VK_PASS_TRACE_AT") ? atoll(getenv("RX_VK_PASS_TRACE_AT")) : 0;
         if (at && ++seen % at == 0) pass_traces_log(texture_frame_no() - 1, texture_frame_no());
+        else if (wonder_draw_log_on()) pass_traces_log(texture_frame_no() - 1, texture_frame_no() - 1);
     }
     static const char* shots = getenv("RX_VK_SHOTS");
     static const int shot_every = getenv("RX_VK_SHOT_EVERY") ? std::max(1, atoi(getenv("RX_VK_SHOT_EVERY"))) : 300;
@@ -8115,6 +8119,7 @@ void fill_replay_table(MkwVkRenderer& t) {
     t.nvn_event_signal = event_signal_queued;
     t.option = [](int id) -> int {   // (3: the fixed path's scale in 1/10000, vk_menu.cpp; DLAA: full scale, vk_dlss.cpp)
         if (id == 11) return opts.stick_dead_zone;
+        if (id == 950) return (int)dev.props.limits.maxImageDimension2D;   // (private live-size spike: Wonder's window limit)
         if (id == HOS_OPT_WALK_MODE) return opts.walk_mode;
         if (id == HOS_OPT_WALK_SPEED) return opts.walk_speed;
         if (id == HOS_OPT_CHEAT_HEARTS) return menu_heart_protection();
